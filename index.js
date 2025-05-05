@@ -1,8 +1,8 @@
 const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const fs = require('fs');
+const express = require('express');
 require('dotenv').config();
 
-// Discord関係
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
@@ -19,7 +19,6 @@ const client = new Client({
   partials: [Partials.GuildMember],
 });
 
-// ポイント読み書き
 function loadPoints() {
   if (!fs.existsSync(POINTS_FILE)) fs.writeFileSync(POINTS_FILE, '{}');
   return JSON.parse(fs.readFileSync(POINTS_FILE));
@@ -27,8 +26,6 @@ function loadPoints() {
 function savePoints(points) {
   fs.writeFileSync(POINTS_FILE, JSON.stringify(points, null, 2));
 }
-
-// メッセージログ読み書き
 function loadMessageLog() {
   if (!fs.existsSync(MESSAGE_LOG_FILE)) fs.writeFileSync(MESSAGE_LOG_FILE, '{}');
   return JSON.parse(fs.readFileSync(MESSAGE_LOG_FILE));
@@ -46,6 +43,7 @@ client.on('interactionCreate', async interaction => {
 
   const points = loadPoints();
   const userId = interaction.user.id;
+  const now = new Date();
 
   if (interaction.commandName === 'register') {
     try {
@@ -65,7 +63,7 @@ client.on('interactionCreate', async interaction => {
 
       await member.roles.add(role);
       await member.setNickname(`【農奴】${member.user.username}`);
-      points[userId] = 1000;
+      points[userId] = { points: 1000 };
       savePoints(points);
 
       await interaction.editReply('登録が完了しました！初期ポイント: 1000p');
@@ -75,18 +73,85 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (interaction.commandName === 'profile') {
-    try {
-      await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
 
-      if (!points[userId]) {
-        await interaction.editReply('まだ登録されていません。/register で登録してください。');
-        return;
-      }
-
-      await interaction.editReply(`あなたの現在のポイントは ${points[userId]}p です。`);
-    } catch (e) {
-      console.error('プロフィール表示エラー:', e);
+    if (!points[userId]) {
+      await interaction.editReply('まだ登録されていません。/register で登録してください。');
+      return;
     }
+
+    const userData = points[userId];
+    let reply = `現在のポイント: ${userData.points}p`;
+
+    if (userData.debt) {
+      reply += `\n💸 借金残高: ${userData.debt.total}p\n📅 返済期限: ${userData.debt.due}`;
+    }
+
+    await interaction.editReply(reply);
+  }
+
+  if (interaction.commandName === 'borrow') {
+    await interaction.deferReply({ ephemeral: true });
+
+    const amount = interaction.options.getInteger('amount');
+    if (!points[userId]) {
+      await interaction.editReply('まず /register で登録してください。');
+      return;
+    }
+
+    const userData = points[userId];
+    if (userData.debt) {
+      await interaction.editReply('借金があります。返済が完了するまで再度借りられません。');
+      return;
+    }
+
+    const max = userData.points * 3;
+    if (amount > max) {
+      await interaction.editReply(`借金上限は現在のポイントの3倍 (${max}p) までです。`);
+      return;
+    }
+
+    const totalWithInterest = Math.ceil(amount * 1.1);
+    const dueDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .split('T')[0];
+
+    userData.points += amount;
+    userData.debt = {
+      total: totalWithInterest,
+      due: dueDate,
+    };
+
+    savePoints(points);
+    await interaction.editReply(`💰 ${amount}p を借りました（返済額: ${totalWithInterest}p、期限: ${dueDate}）`);
+  }
+
+  if (interaction.commandName === 'repay') {
+    await interaction.deferReply({ ephemeral: true });
+
+    const amount = interaction.options.getInteger('amount');
+    if (!points[userId] || !points[userId].debt) {
+      await interaction.editReply('現在借金はありません。');
+      return;
+    }
+
+    const userData = points[userId];
+    if (userData.points < amount) {
+      await interaction.editReply('ポイントが足りません。');
+      return;
+    }
+
+    userData.points -= amount;
+    userData.debt.total -= amount;
+
+    if (userData.debt.total <= 0) {
+      delete userData.debt;
+      await interaction.editReply(`💸 借金を完済しました！`);
+    } else {
+      await interaction.editReply(`💸 残りの借金: ${userData.debt.total}p`);
+    }
+
+    savePoints(points);
   }
 });
 
@@ -98,8 +163,7 @@ client.on('messageCreate', async (message) => {
   const points = loadPoints();
   const log = loadMessageLog();
 
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-
+  const today = new Date().toISOString().split('T')[0];
   if (!log[today]) log[today] = {};
   if (!log[today][userId]) log[today][userId] = 0;
 
@@ -109,7 +173,11 @@ client.on('messageCreate', async (message) => {
 
   if (!points[userId]) return;
 
-  points[userId] += 5;
+  if (typeof points[userId] === 'number') {
+    points[userId] = { points: points[userId] };
+  }
+
+  points[userId].points += 5;
   savePoints(points);
   saveMessageLog(log);
 });
@@ -117,7 +185,15 @@ client.on('messageCreate', async (message) => {
 // スラッシュコマンド登録
 const commands = [
   new SlashCommandBuilder().setName('register').setDescription('農奴として登録します'),
-  new SlashCommandBuilder().setName('profile').setDescription('現在のポイントを確認します')
+  new SlashCommandBuilder().setName('profile').setDescription('現在のポイントと借金を確認します'),
+  new SlashCommandBuilder()
+    .setName('borrow')
+    .setDescription('ポイントを借ります（利息10%、所持ポイントの3倍まで）')
+    .addIntegerOption(opt => opt.setName('amount').setDescription('借りたいポイント').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('repay')
+    .setDescription('借金を返済します')
+    .addIntegerOption(opt => opt.setName('amount').setDescription('返済するポイント').setRequired(true)),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -132,10 +208,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 client.login(TOKEN);
 
-//
-// 🔁 Expressサーバー（Renderのポートスキャン対策）
-//
-const express = require('express');
+// Render対策のExpressサーバー
 const app = express();
 app.get('/', (req, res) => res.send('Discord BOT is running.'));
 app.listen(process.env.PORT || 3000);
