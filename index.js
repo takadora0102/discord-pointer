@@ -32,29 +32,45 @@ client.on('interactionCreate', async interaction => {
   const userId = interaction.user.id;
 
   if (interaction.commandName === 'register') {
-    if (points[userId]) {
-      await interaction.reply({ content: 'すでに登録されています！', ephemeral: true });
-      return;
+    try {
+      await interaction.deferReply({ ephemeral: true });
+
+      if (points[userId]) {
+        await interaction.editReply('すでに登録されています！');
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(userId);
+      const role = interaction.guild.roles.cache.find(r => r.name === '農奴');
+      if (!role) {
+        await interaction.editReply('「農奴」ロールが見つかりません。');
+        return;
+      }
+
+      await member.roles.add(role);
+      await member.setNickname(`【農奴】${member.user.username}`);
+      points[userId] = 1000;
+      savePoints(points);
+
+      await interaction.editReply('登録が完了しました！初期ポイント: 1000p');
+    } catch (e) {
+      console.error('登録時エラー:', e);
     }
-
-    const member = await interaction.guild.members.fetch(userId);
-    const role = interaction.guild.roles.cache.find(r => r.name === '農奴');
-    if (!role) return interaction.reply('「農奴」ロールが見つかりません。');
-
-    await member.roles.add(role);
-    await member.setNickname(`【農奴】${member.user.username}`);
-    points[userId] = 1000;
-    savePoints(points);
-
-    await interaction.reply({ content: '登録が完了しました！初期ポイント: 1000p', ephemeral: true });
   }
 
   if (interaction.commandName === 'profile') {
-    if (!points[userId]) {
-      await interaction.reply({ content: 'まだ登録されていません。/register で登録してください。', ephemeral: true });
-      return;
+    try {
+      await interaction.deferReply({ ephemeral: true });
+
+      if (!points[userId]) {
+        await interaction.editReply('まだ登録されていません。/register で登録してください。');
+        return;
+      }
+
+      await interaction.editReply(`あなたの現在のポイントは ${points[userId]}p です。`);
+    } catch (e) {
+      console.error('プロフィール表示エラー:', e);
     }
-    await interaction.reply({ content: `あなたの現在のポイントは ${points[userId]}p です。`, ephemeral: true });
   }
 });
 
