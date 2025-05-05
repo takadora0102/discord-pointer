@@ -1,4 +1,4 @@
-// ✅ Supabase連携 index.js（/profile → 即時 reply で Unknown interaction 対策済）
+// ✅ Supabase連携 index.js（/profile の reply 二重防止修正版）
 
 const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
@@ -59,18 +59,19 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (interaction.commandName === 'profile') {
+    if (!interaction.isRepliable()) return;
+
     const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
     if (!data) {
-      try {
-        await interaction.reply({ content: 'まだ登録されていません。/register で登録してください。', ephemeral: true });
-      } catch (e) { console.error("reply error (profile):", e); }
-      return;
+      return interaction.reply({ content: 'まだ登録されていません。/register で登録してください。', ephemeral: true });
     }
+
     let msg = `現在のポイント: ${data.points}p`;
-    if (data.debt_amount && data.debt_due) msg += `\n💸 借金残高: ${data.debt_amount}p\n📅 返済期限: ${data.debt_due}`;
-    try {
-      await interaction.reply({ content: msg, ephemeral: true });
-    } catch (e) { console.error("reply error (profile msg):", e); }
+    if (data.debt_amount && data.debt_due) {
+      msg += `\n💸 借金残高: ${data.debt_amount}p\n📅 返済期限: ${data.debt_due}`;
+    }
+
+    return interaction.reply({ content: msg, ephemeral: true });
   }
 
   if (interaction.commandName === 'borrow') {
