@@ -18,7 +18,6 @@ const client = new Client({
   partials: [Partials.GuildMember],
 });
 
-// ポイント保存
 function loadPoints() {
   if (!fs.existsSync(POINTS_FILE)) fs.writeFileSync(POINTS_FILE, '{}');
   return JSON.parse(fs.readFileSync(POINTS_FILE));
@@ -28,7 +27,6 @@ function savePoints(points) {
   fs.writeFileSync(POINTS_FILE, JSON.stringify(points, null, 2));
 }
 
-// メッセージログ保存
 function loadMessageLog() {
   if (!fs.existsSync(MESSAGE_LOG_FILE)) fs.writeFileSync(MESSAGE_LOG_FILE, '{}');
   return JSON.parse(fs.readFileSync(MESSAGE_LOG_FILE));
@@ -42,7 +40,6 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
 
-// スラッシュコマンド対応
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -59,9 +56,9 @@ client.on('interactionCreate', async interaction => {
       }
 
       const member = await interaction.guild.members.fetch(userId);
-      const role = interaction.guild.roles.cache.find(r => r.name === 'Serf（農奴）');
+      const role = interaction.guild.roles.cache.find(r => r.name === 'Serf(農奴)');
       if (!role) {
-        await interaction.editReply('「Serf（農奴）」ロールが見つかりません。サーバーにロール名が正確にあるか確認してください。');
+        await interaction.editReply('「Serf(農奴)」ロールが見つかりません。');
         return;
       }
 
@@ -92,7 +89,6 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// メッセージ送信ポイント加算
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
@@ -100,7 +96,7 @@ client.on('messageCreate', async (message) => {
   const points = loadPoints();
   const log = loadMessageLog();
 
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const today = new Date().toISOString().split('T')[0];
 
   if (!log[today]) log[today] = {};
   if (!log[today][userId]) log[today][userId] = 0;
@@ -109,14 +105,13 @@ client.on('messageCreate', async (message) => {
 
   log[today][userId] += 1;
 
-  if (!points[userId]) return; // 未登録者は無視
+  if (!points[userId]) return;
 
   points[userId] += 5;
   savePoints(points);
   saveMessageLog(log);
 });
 
-// コマンド登録
 const commands = [
   new SlashCommandBuilder().setName('register').setDescription('農奴として登録します'),
   new SlashCommandBuilder().setName('profile').setDescription('現在のポイントを確認します')
