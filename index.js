@@ -1,4 +1,4 @@
-// ✅ Supabase連携 index.js（/profile の reply 二重防止修正版）
+// ✅ 全コマンド interaction.isRepliable() 対応 index.js（10062 完全対策）
 
 const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
@@ -32,6 +32,7 @@ client.on('interactionCreate', async interaction => {
   const userId = interaction.user.id;
 
   if (interaction.commandName === 'register') {
+    if (!interaction.isRepliable()) return;
     try {
       await interaction.deferReply({ ephemeral: true });
     } catch (e) {
@@ -60,21 +61,19 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'profile') {
     if (!interaction.isRepliable()) return;
-
     const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
     if (!data) {
       return interaction.reply({ content: 'まだ登録されていません。/register で登録してください。', ephemeral: true });
     }
-
     let msg = `現在のポイント: ${data.points}p`;
     if (data.debt_amount && data.debt_due) {
       msg += `\n💸 借金残高: ${data.debt_amount}p\n📅 返済期限: ${data.debt_due}`;
     }
-
     return interaction.reply({ content: msg, ephemeral: true });
   }
 
   if (interaction.commandName === 'borrow') {
+    if (!interaction.isRepliable()) return;
     try { await interaction.deferReply({ ephemeral: true }); } catch (e) { console.error("deferReply error (borrow):", e); return; }
     const amount = interaction.options.getInteger('amount');
     const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
@@ -90,7 +89,6 @@ client.on('interactionCreate', async interaction => {
       try { await interaction.editReply(`最大借入可能額は ${userData.points * 3}p です。`); } catch (e) { console.error("editReply error (borrow limit):", e); }
       return;
     }
-
     const total = Math.ceil(amount * 1.1);
     const due = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
     await supabase.from('points').update({
@@ -98,13 +96,13 @@ client.on('interactionCreate', async interaction => {
       debt_amount: total,
       debt_due: due,
     }).eq('user_id', userId);
-
     try {
       await interaction.editReply(`💰 ${amount}p 借りました（返済額: ${total}p、期限: ${due}）`);
     } catch (e) { console.error("editReply error (borrow):", e); }
   }
 
   if (interaction.commandName === 'repay') {
+    if (!interaction.isRepliable()) return;
     try { await interaction.deferReply({ ephemeral: true }); } catch (e) { console.error("deferReply error (repay):", e); return; }
     const amount = interaction.options.getInteger('amount');
     const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
@@ -116,7 +114,6 @@ client.on('interactionCreate', async interaction => {
       try { await interaction.editReply('ポイントが足りません。'); } catch (e) { console.error("editReply error (repay insufficient):", e); }
       return;
     }
-
     const newDebt = userData.debt_amount - amount;
     const updates = {
       points: userData.points - amount,
@@ -124,7 +121,6 @@ client.on('interactionCreate', async interaction => {
       debt_due: newDebt > 0 ? userData.debt_due : null,
     };
     await supabase.from('points').update(updates).eq('user_id', userId);
-
     try {
       await interaction.editReply(newDebt > 0 ? `残りの借金: ${newDebt}p` : '💸 借金を完済しました！');
     } catch (e) { console.error("editReply error (repay):", e); }
