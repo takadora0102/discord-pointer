@@ -1,4 +1,4 @@
-// ✅ index.js（10062／40060両方を完全防止）
+// ✅ index.js（10062・40060 両対策 + 全reply/deferにtry-catch付き）
 
 const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
@@ -43,30 +43,39 @@ client.on('interactionCreate', async interaction => {
 
     const { data } = await supabase.from('points').select('*').eq('user_id', userId);
     if (data.length > 0) {
-      await interaction.editReply('すでに登録されています！');
+      try { await interaction.editReply('すでに登録されています！'); } catch (e) { console.error("editReply error (register exists):", e); }
       return;
     }
 
     const member = await interaction.guild.members.fetch(userId);
     const role = interaction.guild.roles.cache.find(r => r.name === 'Serf(農奴)');
-    if (role) await member.roles.add(role);
-    try { await member.setNickname(`【農奴】${member.user.username}`); } catch (e) { console.log('ニックネーム変更失敗:', e.message); }
+    if (role) await member.roles.add(role).catch(e => console.log("ロール付与失敗：", e.message));
+    await member.setNickname(`【農奴】${member.user.username}`).catch(e => console.log('ニックネーム変更失敗:', e.message));
 
     await supabase.from('points').insert({ user_id: userId, points: 1000 });
-    await interaction.editReply('登録が完了しました！初期ポイント: 1000p');
+    try { await interaction.editReply('登録が完了しました！初期ポイント: 1000p'); } catch (e) { console.error("editReply error (register success):", e); }
   }
 
   if (interaction.commandName === 'profile') {
     const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
     if (!data) {
-      await interaction.reply({ content: 'まだ登録されていません。/register で登録してください。', ephemeral: true });
+      try {
+        await interaction.reply({ content: 'まだ登録されていません。/register で登録してください。', ephemeral: true });
+      } catch (e) {
+        console.error("reply error (profile not found):", e);
+      }
       return;
     }
+
     let msg = `現在のポイント: ${data.points}p`;
     if (data.debt_amount && data.debt_due) {
       msg += `\n💸 借金残高: ${data.debt_amount}p\n📅 返済期限: ${data.debt_due}`;
     }
-    await interaction.reply({ content: msg, ephemeral: true });
+    try {
+      await interaction.reply({ content: msg, ephemeral: true });
+    } catch (e) {
+      console.error("reply error (profile full):", e);
+    }
   }
 
   if (interaction.commandName === 'borrow') {
@@ -81,15 +90,15 @@ client.on('interactionCreate', async interaction => {
     const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
 
     if (!userData) {
-      await interaction.editReply('登録されていません。/register してください。');
+      try { await interaction.editReply('登録されていません。/register してください。'); } catch (e) { console.error("editReply error (borrow unregistered):", e); }
       return;
     }
     if (userData.debt_amount) {
-      await interaction.editReply('借金があります。返済後に再度ご利用ください。');
+      try { await interaction.editReply('借金があります。返済後に再度ご利用ください。'); } catch (e) { console.error("editReply error (borrow existing debt):", e); }
       return;
     }
     if (amount > userData.points * 3) {
-      await interaction.editReply(`最大借入可能額は ${userData.points * 3}p です。`);
+      try { await interaction.editReply(`最大借入可能額は ${userData.points * 3}p です。`); } catch (e) { console.error("editReply error (borrow limit):", e); }
       return;
     }
 
@@ -101,7 +110,11 @@ client.on('interactionCreate', async interaction => {
       debt_due: due,
     }).eq('user_id', userId);
 
-    await interaction.editReply(`💰 ${amount}p 借りました（返済額: ${total}p、期限: ${due}）`);
+    try {
+      await interaction.editReply(`💰 ${amount}p 借りました（返済額: ${total}p、期限: ${due}）`);
+    } catch (e) {
+      console.error("editReply error (borrow success):", e);
+    }
   }
 
   if (interaction.commandName === 'repay') {
@@ -115,11 +128,11 @@ client.on('interactionCreate', async interaction => {
     const amount = interaction.options.getInteger('amount');
     const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
     if (!userData || !userData.debt_amount) {
-      await interaction.editReply('借金はありません。');
+      try { await interaction.editReply('借金はありません。'); } catch (e) { console.error("editReply error (repay no debt):", e); }
       return;
     }
     if (userData.points < amount) {
-      await interaction.editReply('ポイントが足りません。');
+      try { await interaction.editReply('ポイントが足りません。'); } catch (e) { console.error("editReply error (repay insufficient):", e); }
       return;
     }
     const newDebt = userData.debt_amount - amount;
@@ -130,7 +143,11 @@ client.on('interactionCreate', async interaction => {
     };
     await supabase.from('points').update(updates).eq('user_id', userId);
 
-    await interaction.editReply(newDebt > 0 ? `残りの借金: ${newDebt}p` : '💸 借金を完済しました！');
+    try {
+      await interaction.editReply(newDebt > 0 ? `残りの借金: ${newDebt}p` : '💸 借金を完済しました！');
+    } catch (e) {
+      console.error("editReply error (repay complete):", e);
+    }
   }
 });
 
