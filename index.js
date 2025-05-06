@@ -1,4 +1,4 @@
-// === DiscordポイントBOTメインコード 全機能統合・不具合修正版 ===
+// === DiscordポイントBOTメインコード（統合ショップ機能・ロール階級更新版） ===
 
 const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionsBitField } = require('discord.js');
 const fs = require('fs');
@@ -17,8 +17,6 @@ const GUILD_ID = process.env.GUILD_ID;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-const rolesList = ["Serf(農奴)", "Knight", "Baron", "Viscount", "Count", "Marquess", "Duke"];
 
 const msgLogPath = './message_log.json';
 function loadMessageLog() {
@@ -39,11 +37,7 @@ const commands = [
     new SlashCommandBuilder().setName('borrow').setDescription('借金します').addIntegerOption(opt => opt.setName('amount').setDescription('借金額').setRequired(true)),
     new SlashCommandBuilder().setName('repay').setDescription('借金を返済します').addIntegerOption(opt => opt.setName('amount').setDescription('返済額').setRequired(true)),
     new SlashCommandBuilder().setName('addpoints').setDescription('ユーザーにポイントを付与').addUserOption(opt => opt.setName('user').setDescription('対象ユーザー').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('付与ポイント').setRequired(true)),
-    new SlashCommandBuilder().setName('shop').setDescription('ロールショップ').addStringOption(opt => opt.setName('type').setDescription('ショップの種類').setRequired(true).addChoices(
-        { name: '民衆層', value: 'people' },
-        { name: '準貴族', value: 'gentry' },
-        { name: '貴族層', value: 'noble' }
-    ))
+    new SlashCommandBuilder().setName('shop').setDescription('ロール統合ショップを表示する')
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -78,13 +72,14 @@ async function savePoints(data) {
     }
 }
 
-function createShopButtons(roles) {
-    const buttons = roles.map(role => new ButtonBuilder().setCustomId(`buy_${role}`).setLabel(role).setStyle(ButtonStyle.Primary));
-    const rows = [];
-    for (let i = 0; i < buttons.length; i += 5) {
-        rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
-    }
-    return rows;
+function createUnifiedShopButtons() {
+    const roles = [
+        { name: '自由民', price: 10000 },
+        { name: '下級貴族', price: 50000 },
+        { name: '上級貴族', price: 250000 }
+    ];
+    const buttons = roles.map(r => new ButtonBuilder().setCustomId(`buy_${r.name}`).setLabel(`${r.name}（${r.price}p）`).setStyle(ButtonStyle.Primary));
+    return [new ActionRowBuilder().addComponents(buttons)];
 }
 
 client.on('interactionCreate', async interaction => {
@@ -97,7 +92,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.deferReply({ ephemeral: true });
         if (pointsData[userId]) return await interaction.editReply('すでに登録済みです');
         const member = await guild.members.fetch(userId);
-        const role = guild.roles.cache.find(r => r.name === 'Serf(農奴)');
+        const role = guild.roles.cache.find(r => r.name === '農奴');
         await member.roles.add(role);
         await member.setNickname(`【農奴】${interaction.user.username}`);
         pointsData[userId] = { user_id: userId, point: 1000, debt: 0, due: null };
@@ -157,14 +152,7 @@ client.on('interactionCreate', async interaction => {
 
     } else if (interaction.commandName === 'shop') {
         await interaction.deferReply({ ephemeral: true });
-        const type = interaction.options.getString('type');
-        const shopRoles = {
-            people: ['Knight'],
-            gentry: ['Baron'],
-            noble: ['Viscount', 'Count', 'Marquess', 'Duke']
-        };
-        const buttons = createShopButtons(shopRoles[type]);
-        if (buttons.length === 0) return await interaction.editReply('このショップには商品がありません');
+        const buttons = createUnifiedShopButtons();
         await interaction.editReply({ content: '以下のボタンからロールを購入できます：', components: buttons });
     }
 });
