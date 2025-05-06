@@ -66,108 +66,152 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    // === 各コマンド処理をここに記述 ===
     if (commandName === 'register') {
-        // ユーザー登録処理: Supabaseにユーザー情報を保存
-        const { error } = await supabase.from('users').upsert({ user_id: user.id, points: 0, debt: 0 });
-        if (error) return await interaction.reply('ユーザー登録に失敗しました');
-        await interaction.reply('ユーザー登録が完了しました');
+        // ユーザーの情報をデータベースに登録する処理
+        const userId = user.id;
+        const { error } = await supabase
+            .from('profiles')
+            .upsert([{ user_id: userId, points: 0, debt: 0, stocks: [] }], { onConflict: ['user_id'] });
+
+        if (error) {
+            await interaction.reply('ユーザー登録に失敗しました。');
+        } else {
+            await interaction.reply('登録が完了しました。');
+        }
     } else if (commandName === 'profile') {
-        // ポイント、借金、株保有情報を表示
-        const { data, error } = await supabase.from('users').select('points, debt').eq('user_id', user.id);
-        if (error) return await interaction.reply('プロフィール情報の取得に失敗しました');
-        
-        const userInfo = data[0];
-        const stockData = await supabase.from('stocks').select('name, amount').eq('user_id', user.id);
-        let stockInfo = '';
-        stockData.forEach(stock => {
-            stockInfo += `- ${stock.name}: ${stock.amount}株\n`;
-        });
+        await interaction.deferReply({ ephemeral: true });
+        const userId = user.id;
 
-        const profileContent = `
-        📋 **プロフィール**
-        - ポイント: ${userInfo.points}p
-        - 借金残高: ${userInfo.debt}p
-        - 保有株:
-        ${stockInfo || '株を保有していません'}
-        `;
-        await interaction.reply(profileContent);
+        const { data, error } = await supabase
+            .from('profiles')
+            .select('points, debt, stocks')
+            .eq('user_id', userId)
+            .single();
+
+        if (error || !data) {
+            return await interaction.editReply('情報の取得に失敗しました。データベースにユーザーの情報がないか、エラーが発生しました。');
+        }
+
+        const points = data.points || 0;
+        const debt = data.debt || 0;
+        const stocks = data.stocks || [];
+
+        let stocksInfo = '保有株:\n';
+        if (stocks.length === 0) {
+            stocksInfo += '株を保有していません。\n';
+        } else {
+            stocks.forEach(stock => {
+                stocksInfo += `- ${stock.name} : ${stock.amount}株 (${stock.price}p) \n`;
+            });
+        }
+
+        const profileMessage = `**ポイント:** ${points}p\n**借金残高:** ${debt}p\n\n${stocksInfo}`;
+
+        await interaction.editReply(profileMessage);
     } else if (commandName === 'borrow') {
-        // 借金処理: 借金額を増やす
         const amount = options.getInteger('amount');
-        if (amount <= 0) return await interaction.reply('借金額は正の数で入力してください');
+        if (amount <= 0) {
+            return await interaction.reply('借金額は1以上でなければなりません。');
+        }
 
-        const { data, error } = await supabase.from('users').select('debt').eq('user_id', user.id);
-        if (error) return await interaction.reply('借金処理に失敗しました');
-        
-        const newDebt = data[0].debt + amount;
-        await supabase.from('users').update({ debt: newDebt }).eq('user_id', user.id);
-        await interaction.reply(`借金を${amount}pしました。現在の借金残高は${newDebt}pです。`);
+        const userId = user.id;
+        const { data, error } = await supabase
+            .from('profiles')
+            .select('points, debt')
+            .eq('user_id', userId)
+            .single();
+
+        if (error || !data) {
+            return await interaction.reply('ユーザーの情報が取得できませんでした。');
+        }
+
+        const newDebt = data.debt + amount;
+        const newPoints = data.points - amount;
+
+        if (newPoints < 0) {
+            return await interaction.reply('ポイントが不足しています。');
+        }
+
+        await supabase
+            .from('profiles')
+            .update({ debt: newDebt, points: newPoints })
+            .eq('user_id', userId);
+
+        await interaction.reply(`借金が${amount}p増えました。現在の借金残高は${newDebt}pです。`);
     } else if (commandName === 'repay') {
-        // 借金返済処理: 借金額を減らす
         const amount = options.getInteger('amount');
-        if (amount <= 0) return await interaction.reply('返済額は正の数で入力してください');
+        if (amount <= 0) {
+            return await interaction.reply('返済額は1以上でなければなりません。');
+        }
 
-        const { data, error } = await supabase.from('users').select('debt').eq('user_id', user.id);
-        if (error) return await interaction.reply('借金返済に失敗しました');
-        
-        const newDebt = data[0].debt - amount;
-        if (newDebt < 0) return await interaction.reply('返済額が借金残高を上回っています');
-        
-        await supabase.from('users').update({ debt: newDebt }).eq('user_id', user.id);
-        await interaction.reply(`借金を${amount}p返済しました。現在の借金残高は${newDebt}pです。`);
+        const userId = user.id;
+        const { data, error } = await supabase
+            .from('profiles')
+            .select('points, debt')
+            .eq('user_id', userId)
+            .single();
+
+        if (error || !data) {
+            return await interaction.reply('ユーザーの情報が取得できませんでした。');
+        }
+
+        if (data.debt < amount) {
+            return await interaction.reply('返済額が借金残高を上回っています。');
+        }
+
+        const newDebt = data.debt - amount;
+        const newPoints = data.points - amount;
+
+        if (newPoints < 0) {
+            return await interaction.reply('ポイントが不足しています。');
+        }
+
+        await supabase
+            .from('profiles')
+            .update({ debt: newDebt, points: newPoints })
+            .eq('user_id', userId);
+
+        await interaction.reply(`返済が完了しました。残りの借金は${newDebt}pです。`);
     } else if (commandName === 'addpoints') {
-        // 管理者用のポイント付与: 対象ユーザーにポイントを追加
         const targetUser = options.getUser('user');
         const amount = options.getInteger('amount');
-        if (amount <= 0) return await interaction.reply('ポイントは正の数で入力してください');
 
-        const { data, error } = await supabase.from('users').select('points').eq('user_id', targetUser.id);
-        if (error) return await interaction.reply('ポイントの付与に失敗しました');
-        
-        const newPoints = data[0].points + amount;
-        await supabase.from('users').update({ points: newPoints }).eq('user_id', targetUser.id);
-        await interaction.reply(`${targetUser.username}に${amount}pを付与しました。`);
+        if (!targetUser || amount <= 0) {
+            return await interaction.reply('無効な引数です。');
+        }
+
+        const { data, error } = await supabase
+            .from('profiles')
+            .select('points')
+            .eq('user_id', targetUser.id)
+            .single();
+
+        if (error || !data) {
+            return await interaction.reply('ユーザーの情報が取得できませんでした。');
+        }
+
+        const newPoints = data.points + amount;
+
+        await supabase
+            .from('profiles')
+            .update({ points: newPoints })
+            .eq('user_id', targetUser.id);
+
+        await interaction.reply(`${targetUser.tag}に${amount}pが付与されました。`);
     } else if (commandName === 'shop') {
-        // ロール購入用のボタン付きメッセージ表示
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('buy_freeman').setLabel('Freeman(自由民)').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('buy_lower_noble').setLabel('LowerNoble(下級貴族)').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('buy_upper_noble').setLabel('UpperNoble(上級貴族)').setStyle(ButtonStyle.Primary)
-        );
-
-        await interaction.reply({
-            content: '以下のボタンからロールを購入できます：',
-            components: [row]
-        });
+        // ロールショップ表示の処理
+        await interaction.reply('ロールショップの表示機能を実装します');
     } else if (commandName === 'stock') {
-        // 株式の購入・売却処理
         const action = options.getString('action');
         const stockName = options.getString('name');
         const stockAmount = options.getInteger('amount');
 
-        const { data: stockData, error: stockError } = await supabase.from('stocks').select('*').eq('name', stockName);
-        if (stockError) return await interaction.reply('株データの取得に失敗しました');
-        const stock = stockData[0];
-
         if (action === 'buy') {
-            // 購入処理
-            const { data: userStockData, error: userStockError } = await supabase.from('user_stocks').select('*').eq('user_id', user.id).eq('stock_id', stock.id);
-            if (userStockError) return await interaction.reply('購入処理に失敗しました');
-
-            const newAmount = userStockData.length ? userStockData[0].amount + stockAmount : stockAmount;
-            await supabase.from('user_stocks').upsert({ user_id: user.id, stock_id: stock.id, amount: newAmount });
-            await interaction.reply(`${stockName}を${stockAmount}株購入しました。`);
+            // 株を購入する処理
+            await interaction.reply(`株の購入処理: ${stockName} を${stockAmount}株購入します。`);
         } else if (action === 'sell') {
-            // 売却処理
-            const { data: userStockData, error: userStockError } = await supabase.from('user_stocks').select('*').eq('user_id', user.id).eq('stock_id', stock.id);
-            if (userStockError) return await interaction.reply('売却処理に失敗しました');
-
-            const newAmount = userStockData[0].amount - stockAmount;
-            if (newAmount < 0) return await interaction.reply('売却する株数が足りません');
-
-            await supabase.from('user_stocks').update({ amount: newAmount }).eq('user_id', user.id).eq('stock_id', stock.id);
-            await interaction.reply(`${stockName}を${stockAmount}株売却しました。`);
+            // 株を売却する処理
+            await interaction.reply(`株の売却処理: ${stockName} を${stockAmount}株売却します。`);
         }
     }
 });
