@@ -1,6 +1,6 @@
-// === DiscordポイントBOTメインコード 全機能統合版 ===
+// === DiscordポイントBOTメインコード 全機能統合・修正版 ===
 
-const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
 const fs = require('fs');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
@@ -28,6 +28,7 @@ function loadMessageLog() {
 function saveMessageLog(data) {
     fs.writeFileSync(msgLogPath, JSON.stringify(data, null, 2));
 }
+
 function getToday() {
     return new Date().toISOString().slice(0, 10);
 }
@@ -36,10 +37,14 @@ function getToday() {
 const commands = [
     new SlashCommandBuilder().setName('register').setDescription('ポイントシステムに登録します'),
     new SlashCommandBuilder().setName('profile').setDescription('現在のポイントと借金状況を確認します'),
-    new SlashCommandBuilder().setName('borrow').setDescription('借金します（上限: 所持ポイントの3倍, 利息10%, 7日以内返済）'),
+    new SlashCommandBuilder().setName('borrow').setDescription('借金します（上限指定可能、利息10%、7日以内返済）').addIntegerOption(opt => opt.setName('amount').setDescription('借金額').setRequired(true)),
     new SlashCommandBuilder().setName('repay').setDescription('借金を返済します').addIntegerOption(opt => opt.setName('amount').setDescription('返済額').setRequired(true)),
     new SlashCommandBuilder().setName('addpoints').setDescription('ユーザーにポイントを付与').addUserOption(opt => opt.setName('user').setDescription('対象ユーザー').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('付与ポイント').setRequired(true)),
-    new SlashCommandBuilder().setName('shop').setDescription('ロールショップを表示（管理者のみ）')
+    new SlashCommandBuilder().setName('shop').setDescription('ロールショップ').addStringOption(opt => opt.setName('type').setDescription('ショップの種類').setRequired(true).addChoices(
+        { name: '民衆層', value: 'people' },
+        { name: '準貴族', value: 'gentry' },
+        { name: '貴族層', value: 'noble' }
+    ))
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -74,6 +79,16 @@ async function savePoints(data) {
     }
 }
 
+// === ロールショップボタン生成 ===
+function createShopButtons(roles) {
+    const buttons = roles.map(role => new ButtonBuilder().setCustomId(`buy_${role}`).setLabel(role).setStyle(ButtonStyle.Primary));
+    const rows = [];
+    for (let i = 0; i < buttons.length; i += 5) {
+        rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+    }
+    return rows;
+}
+
 // === コマンド処理 ===
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -89,7 +104,7 @@ client.on('interactionCreate', async interaction => {
             const role = guild.roles.cache.find(r => r.name === 'Serf(農奴)');
             await member.roles.add(role);
             await member.setNickname(`【農奴】${interaction.user.username}`);
-            pointsData[userId] = { user_id: userId, point: 1000 };
+            pointsData[userId] = { user_id: userId, point: 1000, debt: 0, due: null };
             await savePoints(pointsData);
             await interaction.editReply('登録完了！1000p付与されました。');
         } catch (err) {
@@ -111,18 +126,20 @@ client.on('interactionCreate', async interaction => {
     } else if (interaction.commandName === 'borrow') {
         try {
             await interaction.deferReply({ ephemeral: true });
+            const amount = interaction.options.getInteger('amount');
             const user = pointsData[userId];
             if (!user) return await interaction.editReply('未登録です');
             if (user.debt) return await interaction.editReply('借金返済中です');
             const max = user.point * 3;
-            const debt = Math.floor(max * 1.1);
+            if (amount <= 0 || amount > max) return await interaction.editReply(`1〜${max}p で指定してください`);
+            const debt = Math.floor(amount * 1.1);
             const due = new Date();
             due.setDate(due.getDate() + 7);
-            user.point += max;
+            user.point += amount;
             user.debt = debt;
             user.due = due.toISOString().slice(0, 10);
             await savePoints(pointsData);
-            await interaction.editReply(`${max}pを借金しました（返済額 ${debt}p, 返済期限 ${user.due}）`);
+            await interaction.editReply(`${amount}pを借金しました（返済額 ${debt}p, 返済期限 ${user.due}）`);
         } catch (err) {
             console.error('borrow error:', err);
         }
@@ -146,7 +163,7 @@ client.on('interactionCreate', async interaction => {
         }
 
     } else if (interaction.commandName === 'addpoints') {
-        if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return await interaction.reply('権限がありません');
+        if (!interaction.member.permissions.has('Administrator')) return await interaction.reply('権限がありません');
         const target = interaction.options.getUser('user');
         const amount = interaction.options.getInteger('amount');
         const targetId = target.id;
@@ -156,38 +173,20 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply(`${target.username} に ${amount}p 付与しました`);
 
     } else if (interaction.commandName === 'shop') {
-        if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return await interaction.reply('管理者専用コマンドです');
-        const row = new ActionRowBuilder().addComponents(
-            rolesList.slice(1).map(roleName =>
-                new ButtonBuilder().setCustomId(`buy_${roleName}`).setLabel(`${roleName} を購入`).setStyle(ButtonStyle.Primary)
-            )
-        );
-        await interaction.reply({ content: '以下のボタンからロールを購入できます：', components: [row] });
+        try {
+            await interaction.deferReply({ ephemeral: true });
+            const type = interaction.options.getString('type');
+            const shopRoles = {
+                people: ['Knight'],
+                gentry: ['Baron'],
+                noble: ['Viscount', 'Count', 'Marquess', 'Duke']
+            };
+            const buttons = createShopButtons(shopRoles[type]);
+            await interaction.editReply({ content: '以下のボタンからロールを購入できます：', components: buttons });
+        } catch (err) {
+            console.error('shop error:', err);
+        }
     }
-});
-
-// === ボタンインタラクション（ロール購入処理） ===
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isButton()) return;
-    const userId = interaction.user.id;
-    const guild = interaction.guild;
-    const member = await guild.members.fetch(userId);
-    const roleName = interaction.customId.replace('buy_', '');
-    const targetIndex = rolesList.indexOf(roleName);
-    const prevRole = rolesList[targetIndex - 1];
-    const targetRole = guild.roles.cache.find(r => r.name === roleName);
-    const prevRoleObj = guild.roles.cache.find(r => r.name === prevRole);
-    const pointsData = await loadPoints();
-    const user = pointsData[userId];
-    if (!user) return await interaction.reply({ content: '未登録です', ephemeral: true });
-    if (!member.roles.cache.has(prevRoleObj.id)) return await interaction.reply({ content: `購入には ${prevRole} ロールが必要です`, ephemeral: true });
-    const price = roleName === 'Knight' ? 10000 : 10;
-    if (user.point < price) return await interaction.reply({ content: 'ポイントが足りません', ephemeral: true });
-    await member.roles.add(targetRole);
-    await member.setNickname(`【${roleName}】${interaction.user.username}`);
-    user.point -= price;
-    await savePoints(pointsData);
-    await interaction.reply({ content: `${roleName} ロールを購入しました！`, ephemeral: true });
 });
 
 // === メッセージポイント処理（1日上限20回、1回5p） ===
