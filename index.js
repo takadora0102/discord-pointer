@@ -1,9 +1,10 @@
-// === DiscordポイントBOTメインコード 統合ショップ機能・ロール階級更新対応版 ===
+// === DiscordポイントBOTメインコード 全機能統合・株式機能付き ===
 
 const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionsBitField } = require('discord.js');
 const fs = require('fs');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
+const cron = require('node-cron');
 require('dotenv').config();
 
 const client = new Client({
@@ -26,17 +27,20 @@ function loadMessageLog() {
 function saveMessageLog(data) {
     fs.writeFileSync(msgLogPath, JSON.stringify(data, null, 2));
 }
+
 function getToday() {
     return new Date().toISOString().slice(0, 10);
 }
 
 const commands = [
     new SlashCommandBuilder().setName('register').setDescription('ポイントシステムに登録します'),
-    new SlashCommandBuilder().setName('profile').setDescription('現在のポイントと借金状況を確認します'),
+    new SlashCommandBuilder().setName('profile').setDescription('現在のポイントと借金状況・株式保有状況を確認します'),
     new SlashCommandBuilder().setName('borrow').setDescription('借金します').addIntegerOption(opt => opt.setName('amount').setDescription('借金額').setRequired(true)),
     new SlashCommandBuilder().setName('repay').setDescription('借金を返済します').addIntegerOption(opt => opt.setName('amount').setDescription('返済額').setRequired(true)),
     new SlashCommandBuilder().setName('addpoints').setDescription('ユーザーにポイントを付与').addUserOption(opt => opt.setName('user').setDescription('対象ユーザー').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('付与ポイント').setRequired(true)),
-    new SlashCommandBuilder().setName('shop').setDescription('ロールショップ')
+    new SlashCommandBuilder().setName('stocks').setDescription('現在の株価を表示'),
+    new SlashCommandBuilder().setName('buy').setDescription('株を購入').addStringOption(opt => opt.setName('symbol').setDescription('銘柄').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('数量').setRequired(true)),
+    new SlashCommandBuilder().setName('sell').setDescription('株を売却').addStringOption(opt => opt.setName('symbol').setDescription('銘柄').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('数量').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -71,136 +75,80 @@ async function savePoints(data) {
     }
 }
 
-function createShopButtons() {
-    const buttons = [
-        new ButtonBuilder().setCustomId('buy_freeman').setLabel('自由民（10000p）').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('buy_lower_noble').setLabel('下級貴族（50000p）').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('buy_high_noble').setLabel('上級貴族（250000p）').setStyle(ButtonStyle.Primary),
-    ];
-    return [new ActionRowBuilder().addComponents(buttons)];
-}
-
 client.on('interactionCreate', async interaction => {
-    if (interaction.isButton()) {
-        const userId = interaction.user.id;
-        const member = await interaction.guild.members.fetch(userId);
-        const pointsData = await loadPoints();
-        const user = pointsData[userId];
-        if (!user) return await interaction.reply({ content: '未登録です', ephemeral: true });
-
-        const roleInfo = {
-            'buy_freeman': { role: 'Freeman(自由民)', price: 10000 },
-            'buy_lower_noble': { role: 'lower noble(下級貴族)', price: 50000 },
-            'buy_high_noble': { role: 'high noble(上級貴族)', price: 250000 }
-        };
-
-        const choice = roleInfo[interaction.customId];
-        if (!choice) return;
-
-        if (user.point < choice.price) {
-            return await interaction.reply({ content: 'ポイントが不足しています', ephemeral: true });
-        }
-
-        const role = interaction.guild.roles.cache.find(r => r.name === choice.role);
-        if (!role) return await interaction.reply({ content: 'ロールが見つかりません', ephemeral: true });
-
-        await member.roles.add(role);
-        user.point -= choice.price;
-        await savePoints(pointsData);
-
-        await interaction.reply({ content: `${choice.role} を購入しました！`, ephemeral: true });
-    }
-
     if (!interaction.isChatInputCommand()) return;
     const userId = interaction.user.id;
-    const guild = interaction.guild;
     let pointsData = await loadPoints();
 
-    if (interaction.commandName === 'register') {
+    if (interaction.commandName === 'stocks') {
+        const { data, error } = await supabase.from('stocks').select('*');
+        if (error) return interaction.reply('株価取得エラー');
+        let msg = '**📈 現在の株価一覧**\n';
+        data.forEach(s => msg += `\n**${s.name} (${s.symbol})**: ${s.price}p`);
+        await interaction.reply({ content: msg, ephemeral: true });
+
+    } else if (interaction.commandName === 'buy') {
         await interaction.deferReply({ ephemeral: true });
-        if (pointsData[userId]) return await interaction.editReply('すでに登録済みです');
-        const member = await guild.members.fetch(userId);
-        const role = guild.roles.cache.find(r => r.name === 'Serf(農奴)');
-        await member.roles.add(role);
-        await member.setNickname(`【農奴】${interaction.user.username}`);
-        pointsData[userId] = { user_id: userId, point: 1000, debt: 0, due: null };
+        const symbol = interaction.options.getString('symbol');
+        const amount = interaction.options.getInteger('amount');
+        const user = pointsData[userId];
+        if (!user) return await interaction.editReply('未登録です');
+
+        const { data, error } = await supabase.from('stocks').select('*').eq('symbol', symbol).single();
+        if (error || !data) return await interaction.editReply('銘柄が見つかりません');
+
+        const total = data.price * amount;
+        if (user.point < total) return await interaction.editReply('ポイント不足');
+        user.point -= total;
+        user[`stock_${symbol}`] = (user[`stock_${symbol}`] || 0) + amount;
         await savePoints(pointsData);
-        await interaction.editReply('登録完了！1000p付与されました。');
+        await interaction.editReply(`${data.name} (${symbol}) を ${amount}株購入しました！`);
+
+    } else if (interaction.commandName === 'sell') {
+        await interaction.deferReply({ ephemeral: true });
+        const symbol = interaction.options.getString('symbol');
+        const amount = interaction.options.getInteger('amount');
+        const user = pointsData[userId];
+        if (!user) return await interaction.editReply('未登録です');
+
+        const holding = user[`stock_${symbol}`] || 0;
+        if (holding < amount) return await interaction.editReply('保有株が不足しています');
+
+        const { data, error } = await supabase.from('stocks').select('*').eq('symbol', symbol).single();
+        if (error || !data) return await interaction.editReply('銘柄が見つかりません');
+
+        const total = data.price * amount;
+        user.point += total;
+        user[`stock_${symbol}`] = holding - amount;
+        await savePoints(pointsData);
+        await interaction.editReply(`${data.name} (${symbol}) を ${amount}株売却しました！`);
 
     } else if (interaction.commandName === 'profile') {
         await interaction.deferReply({ ephemeral: true });
-        pointsData = await loadPoints();
-        const user = pointsData[userId];
-        if (!user) return await interaction.editReply('未登録です。/register を使ってください');
-        const debt = user.debt || 0;
-        const due = user.due || 'なし';
-        const point = user.point ?? 0;
-        await interaction.editReply(`現在のポイント: ${point}p\n💸 借金残高: ${debt}p\n📅 返済期限: ${due}`);
-
-    } else if (interaction.commandName === 'borrow') {
-        await interaction.deferReply({ ephemeral: true });
-        const amount = interaction.options.getInteger('amount');
         const user = pointsData[userId];
         if (!user) return await interaction.editReply('未登録です');
-        if (user.debt > 0) return await interaction.editReply('借金返済中です');
-        const max = user.point * 3;
-        if (amount <= 0 || amount > max) return await interaction.editReply(`1〜${max}p で指定してください`);
-        const debt = Math.floor(amount * 1.1);
-        const due = new Date();
-        due.setDate(due.getDate() + 7);
-        user.point += amount;
-        user.debt = debt;
-        user.due = due.toISOString().slice(0, 10);
-        await savePoints(pointsData);
-        await interaction.editReply(`${amount}pを借金しました（返済額 ${debt}p, 返済期限 ${user.due}）`);
-
-    } else if (interaction.commandName === 'repay') {
-        await interaction.deferReply({ ephemeral: true });
-        const amount = interaction.options.getInteger('amount');
-        const user = pointsData[userId];
-        if (!user) return await interaction.editReply('未登録です');
-        if (!user.debt) return await interaction.editReply('借金がありません');
-        if (amount <= 0 || amount > user.debt) return await interaction.editReply(`1〜${user.debt}pで指定してください`);
-        if (user.point < amount) return await interaction.editReply('ポイント不足');
-        user.point -= amount;
-        user.debt -= amount;
-        if (user.debt === 0) delete user.debt, delete user.due;
-        await savePoints(pointsData);
-        await interaction.editReply(`返済完了！残りの借金: ${user.debt || 0}p`);
-
-    } else if (interaction.commandName === 'addpoints') {
-        if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return await interaction.reply('権限がありません');
-        const target = interaction.options.getUser('user');
-        const amount = interaction.options.getInteger('amount');
-        const targetId = target.id;
-        if (!pointsData[targetId]) pointsData[targetId] = { user_id: targetId, point: 0, debt: 0, due: null };
-        pointsData[targetId].point += amount;
-        await savePoints(pointsData);
-        await interaction.reply(`${target.username} に ${amount}p 付与しました`);
-
-    } else if (interaction.commandName === 'shop') {
-        await interaction.deferReply({ ephemeral: true });
-        const message = `🛍️ショップ🛍️\n\n【民衆層で購入可能商品】\n・自由民のロール(No.1)\n→(一般民としての自由を持つ立場)\n・下級貴族のロール(No.2)\n→(民衆より権威あるが上級の支配者ではない)\n【貴族層で購入可能商品】\n・上級貴族のロール(No.3)\n→(地方や特定分野で支配権を持つ階級)`;
-        const buttons = createShopButtons();
-        await interaction.editReply({ content: message, components: buttons });
+        let msg = `現在のポイント: ${user.point ?? 0}p\n💸 借金残高: ${user.debt || 0}p\n📅 返済期限: ${user.due || 'なし'}`;
+        const stocks = Object.keys(user).filter(k => k.startsWith('stock_'));
+        if (stocks.length > 0) {
+            msg += '\n\n📊 **株式保有状況**';
+            for (const s of stocks) {
+                const sym = s.replace('stock_', '');
+                msg += `\n- ${sym.toUpperCase()}: ${user[s]}株`;
+            }
+        }
+        await interaction.editReply(msg);
     }
 });
 
-client.on('messageCreate', async message => {
-    if (message.author.bot || !message.guild) return;
-    const userId = message.author.id;
-    const log = loadMessageLog();
-    const pointsData = await loadPoints();
-    const user = pointsData[userId];
-    if (!user) return;
-    const today = getToday();
-    if (!log[userId]) log[userId] = {};
-    if (!log[userId][today]) log[userId][today] = 0;
-    if (log[userId][today] >= 20) return;
-    log[userId][today]++;
-    user.point += 5;
-    await savePoints(pointsData);
-    saveMessageLog(log);
+cron.schedule('0 * * * *', async () => {
+    const { data, error } = await supabase.from('stocks').select('*');
+    if (error) return console.error('株価取得エラー');
+    for (const stock of data) {
+        const fluct = 1 + (Math.random() * 0.08 - 0.04);
+        const newPrice = Math.max(1, Math.round(stock.price * fluct));
+        await supabase.from('stocks').update({ price: newPrice }).eq('symbol', stock.symbol);
+    }
+    console.log('📈 株価更新完了');
 });
 
 client.login(TOKEN);
