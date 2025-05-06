@@ -1,4 +1,4 @@
-// === DiscordポイントBOTメインコード（統合ショップ機能・ロール階級更新版） ===
+// === DiscordポイントBOTメインコード 統合ショップ機能・ロール階級更新対応版 ===
 
 const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionsBitField } = require('discord.js');
 const fs = require('fs');
@@ -26,7 +26,6 @@ function loadMessageLog() {
 function saveMessageLog(data) {
     fs.writeFileSync(msgLogPath, JSON.stringify(data, null, 2));
 }
-
 function getToday() {
     return new Date().toISOString().slice(0, 10);
 }
@@ -37,7 +36,7 @@ const commands = [
     new SlashCommandBuilder().setName('borrow').setDescription('借金します').addIntegerOption(opt => opt.setName('amount').setDescription('借金額').setRequired(true)),
     new SlashCommandBuilder().setName('repay').setDescription('借金を返済します').addIntegerOption(opt => opt.setName('amount').setDescription('返済額').setRequired(true)),
     new SlashCommandBuilder().setName('addpoints').setDescription('ユーザーにポイントを付与').addUserOption(opt => opt.setName('user').setDescription('対象ユーザー').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('付与ポイント').setRequired(true)),
-    new SlashCommandBuilder().setName('shop').setDescription('ロール統合ショップを表示する')
+    new SlashCommandBuilder().setName('shop').setDescription('ロールショップ')
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -72,17 +71,46 @@ async function savePoints(data) {
     }
 }
 
-function createUnifiedShopButtons() {
-    const roles = [
-        { name: '自由民', price: 10000 },
-        { name: '下級貴族', price: 50000 },
-        { name: '上級貴族', price: 250000 }
+function createShopButtons() {
+    const buttons = [
+        new ButtonBuilder().setCustomId('buy_freeman').setLabel('自由民（10000p）').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('buy_lower_noble').setLabel('下級貴族（50000p）').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('buy_high_noble').setLabel('上級貴族（250000p）').setStyle(ButtonStyle.Primary),
     ];
-    const buttons = roles.map(r => new ButtonBuilder().setCustomId(`buy_${r.name}`).setLabel(`${r.name}（${r.price}p）`).setStyle(ButtonStyle.Primary));
     return [new ActionRowBuilder().addComponents(buttons)];
 }
 
 client.on('interactionCreate', async interaction => {
+    if (interaction.isButton()) {
+        const userId = interaction.user.id;
+        const member = await interaction.guild.members.fetch(userId);
+        const pointsData = await loadPoints();
+        const user = pointsData[userId];
+        if (!user) return await interaction.reply({ content: '未登録です', ephemeral: true });
+
+        const roleInfo = {
+            'buy_freeman': { role: 'Freeman(自由民)', price: 10000 },
+            'buy_lower_noble': { role: 'lower noble(下級貴族)', price: 50000 },
+            'buy_high_noble': { role: 'high noble(上級貴族)', price: 250000 }
+        };
+
+        const choice = roleInfo[interaction.customId];
+        if (!choice) return;
+
+        if (user.point < choice.price) {
+            return await interaction.reply({ content: 'ポイントが不足しています', ephemeral: true });
+        }
+
+        const role = interaction.guild.roles.cache.find(r => r.name === choice.role);
+        if (!role) return await interaction.reply({ content: 'ロールが見つかりません', ephemeral: true });
+
+        await member.roles.add(role);
+        user.point -= choice.price;
+        await savePoints(pointsData);
+
+        await interaction.reply({ content: `${choice.role} を購入しました！`, ephemeral: true });
+    }
+
     if (!interaction.isChatInputCommand()) return;
     const userId = interaction.user.id;
     const guild = interaction.guild;
@@ -92,7 +120,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.deferReply({ ephemeral: true });
         if (pointsData[userId]) return await interaction.editReply('すでに登録済みです');
         const member = await guild.members.fetch(userId);
-        const role = guild.roles.cache.find(r => r.name === '農奴');
+        const role = guild.roles.cache.find(r => r.name === 'Serf(農奴)');
         await member.roles.add(role);
         await member.setNickname(`【農奴】${interaction.user.username}`);
         pointsData[userId] = { user_id: userId, point: 1000, debt: 0, due: null };
@@ -152,8 +180,9 @@ client.on('interactionCreate', async interaction => {
 
     } else if (interaction.commandName === 'shop') {
         await interaction.deferReply({ ephemeral: true });
-        const buttons = createUnifiedShopButtons();
-        await interaction.editReply({ content: '以下のボタンからロールを購入できます：', components: buttons });
+        const message = `🛍️ショップ🛍️\n\n【民衆層で購入可能商品】\n・自由民のロール(No.1)\n→(一般民としての自由を持つ立場)\n・下級貴族のロール(No.2)\n→(民衆より権威あるが上級の支配者ではない)\n【貴族層で購入可能商品】\n・上級貴族のロール(No.3)\n→(地方や特定分野で支配権を持つ階級)`;
+        const buttons = createShopButtons();
+        await interaction.editReply({ content: message, components: buttons });
     }
 });
 
