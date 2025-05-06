@@ -91,7 +91,7 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const userId = interaction.user.id;
     const guild = interaction.guild;
-    const pointsData = await loadPoints();
+    let pointsData = await loadPoints();
 
     if (interaction.commandName === 'register') {
         await interaction.deferReply({ ephemeral: true });
@@ -106,6 +106,7 @@ client.on('interactionCreate', async interaction => {
 
     } else if (interaction.commandName === 'profile') {
         await interaction.deferReply({ ephemeral: true });
+        pointsData = await loadPoints();
         const user = pointsData[userId];
         if (!user) return await interaction.editReply('未登録です。/register を使ってください');
         const debt = user.debt || 0;
