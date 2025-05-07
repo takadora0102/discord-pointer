@@ -132,7 +132,12 @@ client.on('interactionCreate', async interaction => {
       if (amount > data.point * 3) return interaction.reply({ content: '所持ポイントの3倍を超えています。', ephemeral: true });
 
       const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
-      await supabase.from('points').update({ debt: amount, due: dueDate }).eq('user_id', userId);
+      await supabase.from('points').update({
+        debt: amount,
+        due: dueDate,
+        point: data.point + amount
+      }).eq('user_id', userId);
+
       await interaction.reply({ content: `${amount}p を借りました。返済期限は ${dueDate} です。`, ephemeral: true });
 
     } else if (action === 'repay') {
