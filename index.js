@@ -146,3 +146,13 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     console.error(err);
   }
 })();
+
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Discord BOT is running\n');
+}).listen(PORT, () => {
+  console.log(`HTTP server running on port ${PORT}`);
+});
