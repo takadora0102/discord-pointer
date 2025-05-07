@@ -111,11 +111,11 @@ client.on('interactionCreate', async interaction => {
     const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
     if (!data) return interaction.reply({ content: '登録されていません。', ephemeral: true });
 
-    const debtText = data.debt ? `${data.debt}p` : 'なし';
+    const debtText = data.debt ? `${Math.ceil(data.debt * 1.1)}p` : 'なし';
     const dueText = data.due ? data.due : 'なし';
 
     await interaction.reply({
-      content: `所持ポイント: ${data.point}p\n借金: ${debtText}\n返済期限: ${dueText}`,
+      content: `所持ポイント: ${data.point}p\n借金（返済総額）: ${debtText}\n返済期限: ${dueText}`,
       ephemeral: true
     });
 
