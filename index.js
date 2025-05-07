@@ -99,18 +99,37 @@ client.on('interactionCreate', async interaction => {
   const userId = interaction.user.id;
 
   if (interaction.commandName === 'register') {
+    // 登録済みか確認
+    const { data: existing, error } = await supabase
+      .from('points')
+      .select('user_id')
+      .eq('user_id', userId)
+      .single();
+
+    if (existing) {
+      await interaction.reply({ content: '既に登録されています。再登録はできません。', ephemeral: true });
+      return;
+    }
+
     const member = await interaction.guild.members.fetch(userId);
-    const role = interaction.guild.roles.cache.find(r => r.name === 'serf');
+    const roleName = 'serf';
+    const role = interaction.guild.roles.cache.find(r => r.name === roleName);
     if (role) await member.roles.add(role);
 
-    await supabase.from('points').upsert({
+    // ニックネームの設定
+    const originalName = member.nickname || member.user.username;
+    const newNickname = `【${roleName}】${originalName}`;
+    await member.setNickname(newNickname).catch(console.error);
+
+    // 初回登録
+    await supabase.from('points').insert({
       user_id: userId,
       point: 1000,
       debt: 0,
       due: null
     });
 
-    await interaction.reply({ content: '登録完了！初期ポイント1000pとserfロールを付与しました。', ephemeral: true });
+    await interaction.reply({ content: '登録完了！初期ポイント1000pとserfロール、ニックネームを付与しました。', ephemeral: true });
 
   } else if (interaction.commandName === 'profile') {
     const { data, error } = await supabase
