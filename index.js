@@ -48,7 +48,7 @@ client.on('messageCreate', async (message) => {
   const today = new Date().toISOString().split('T')[0];
 
   const { data: logData } = await supabase
-    .from('message_log')
+    .from('message_logs')
     .select('*')
     .eq('user_id', userId)
     .eq('date', today)
