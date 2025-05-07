@@ -72,9 +72,9 @@ client.on('messageCreate', async (message) => {
   }
 
   if (!logData) {
-    await supabase.from('message_log').insert({ user_id: userId, date: today, count: 1 });
+    await supabase.from('message_logs').insert({ user_id: userId, date: today, count: 1 });
   } else {
-    await supabase.from('message_log').update({ count: count + 1 }).eq('user_id', userId).eq('date', today);
+    await supabase.from('message_logs').update({ count: count + 1 }).eq('user_id', userId).eq('date', today);
   }
 });
 
