@@ -83,11 +83,11 @@ async function updateNickname(member, roleName) {
   const newNick = `【${roleName}】${base}`;
   await member.setNickname(newNick).catch(console.error);
 }
+
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   const userId = interaction.user.id;
 
-  // 自動返済チェック
   await autoRepay(userId, interaction.guild);
 
   if (interaction.commandName === 'register') {
@@ -107,7 +107,6 @@ client.on('interactionCreate', async interaction => {
     });
 
     await interaction.reply({ content: '登録完了！1000pを付与しました。', ephemeral: true });
-
   } else if (interaction.commandName === 'profile') {
     const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
     if (!data) return interaction.reply({ content: '登録されていません。', ephemeral: true });
@@ -124,7 +123,6 @@ client.on('interactionCreate', async interaction => {
     const action = interaction.options.getString('action');
     const amount = interaction.options.getInteger('amount');
     const member = await interaction.guild.members.fetch(userId);
-    const role = member.roles.cache.find(r => roleSettings[r.name]);
 
     const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
     if (!data) return interaction.reply({ content: '登録されていません。', ephemeral: true });
@@ -150,6 +148,9 @@ client.on('interactionCreate', async interaction => {
       }).eq('user_id', userId);
 
       await interaction.reply({ content: `借金を返済しました（支払額: ${amount}p）`, ephemeral: true });
+    }
+  }
+});
 async function autoRepay(userId, guild) {
   const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
   if (!data || data.debt === 0 || !data.due) return;
@@ -190,8 +191,6 @@ async function autoRepay(userId, guild) {
     due: null
   }).eq('user_id', userId);
 }
-
-// HTTPサーバーと /repay-check エンドポイント
 const PORT = process.env.PORT || 3000;
 http.createServer(async (req, res) => {
   if (req.url === '/repay-check') {
@@ -232,6 +231,7 @@ const commands = [
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
+
 (async () => {
   try {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
