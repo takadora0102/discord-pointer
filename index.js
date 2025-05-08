@@ -1,4 +1,4 @@
-// role_shop_test.js - テスト用ロールショップ機能（/shop role 管理者限定）
+// role_shop_test.js - 修正版（deferReply対応 + Supabase upsert対応）
 
 const { Client, GatewayIntentBits, Partials, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, Events, REST, Routes, SlashCommandBuilder } = require('discord.js');
 require('dotenv').config();
@@ -38,6 +38,8 @@ client.on(Events.InteractionCreate, async interaction => {
       return interaction.reply({ content: 'このコマンドは管理者のみ実行できます。', ephemeral: true });
     }
 
+    await interaction.deferReply({ ephemeral: true }); // ★追加（必ず先に呼ぶ）
+
     const embed = new EmbedBuilder()
       .setTitle('🛡️ ロールショップ')
       .setDescription('上位の称号を購入できます。所持ポイントに応じて購入しましょう。');
@@ -53,7 +55,7 @@ client.on(Events.InteractionCreate, async interaction => {
         .setStyle(ButtonStyle.Primary))
     );
 
-    await interaction.reply({ embeds: [embed], components: [buttons], ephemeral: false });
+    await interaction.editReply({ embeds: [embed], components: [buttons] });
   }
 
   if (interaction.isButton()) {
@@ -83,6 +85,11 @@ client.on(Events.InteractionCreate, async interaction => {
     const nickname = `【${roleInfo.name}】${member.user.username}`;
     await member.setNickname(nickname).catch(() => {});
     await supabase.from('points').update({ point: data.point - roleInfo.price }).eq('user_id', userId);
+
+    // ログをupsert（insert or update）で安全に保存
+    const today = new Date().toISOString().split('T')[0];
+    await supabase.from('message_logs')
+      .upsert({ user_id: userId, date: today, count: 1 }, { onConflict: ['user_id', 'date'] });
 
     await interaction.reply({ content: `${roleInfo.name} を購入しました！`, ephemeral: true });
   }
