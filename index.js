@@ -1,7 +1,7 @@
 const {
   Client, GatewayIntentBits, Partials, REST, Routes,
-  SlashCommandBuilder, EmbedBuilder, ButtonBuilder,
-  ButtonStyle, ActionRowBuilder, ModalBuilder, TextInputBuilder, Events
+  SlashCommandBuilder, EmbedBuilder, StringSelectMenuBuilder,
+  ActionRowBuilder, ModalBuilder, TextInputBuilder, Events
 } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
@@ -11,7 +11,6 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const client = new Client({
@@ -20,93 +19,55 @@ const client = new Client({
 });
 
 const itemData = [
-  { id: 'rename_self', label: '🎭 名前変更（自分）', price: 1000 },
-  { id: 'shield', label: '🛡️ シールド', price: 300 },
-  { id: 'scope', label: '🔭 望遠鏡', price: 100 }
+  { id: 'rename_self', label: '🎭 名前変更（自分）', description: '名前を変更できます（1000p）', price: 1000 },
+  { id: 'shield', label: '🛡️ シールド', description: '24時間守ります（300p）', price: 300 },
+  { id: 'scope', label: '🔭 望遠鏡', description: '相手のシールド状態を確認（100p）', price: 100 }
 ];
 
-client.once('ready', () => console.log('Bot Ready'));
+client.once('ready', () => {
+  console.log('Bot Ready');
+});
+
 client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-
-  const userId = interaction.user.id;
-  await interaction.deferReply({ ephemeral: interaction.commandName !== 'shop' });
-
-  let member;
-  try {
-    member = await interaction.guild.members.fetch(userId);
-  } catch (err) {
-    return interaction.editReply({ content: 'メンバー情報の取得に失敗しました。' });
-  }
-
-  if (interaction.commandName === 'register') {
-    const { data: existing } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (existing) return interaction.editReply({ content: 'すでに登録済みです。' });
-
-    const role = interaction.guild.roles.cache.find(r => r.name === 'SERF');
-    if (role) await member.roles.add(role);
-    await member.setNickname(`【SERF】${member.user.username}`).catch(() => {});
-    await supabase.from('points').insert({ user_id: userId, point: 1000 });
-
-    return interaction.editReply({ content: '登録完了！1000p 付与されました。' });
-  }
-
-  if (interaction.commandName === 'profile') {
-    const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!data) return interaction.editReply({ content: '未登録です。/register を先に実行してください。' });
-
-    const shield = data.shield_until ? `🛡️ シールド有効 (${data.shield_until})` : 'なし';
-    const locked = data.name_locked_until ? `⏳ 名前変更不可 (${data.name_locked_until})` : 'なし';
-
-    return interaction.editReply({ content: `💰 所持ポイント: ${data.point}p\n${shield}\n${locked}` });
-  }
-
-  if (interaction.commandName === 'shop') {
-    const sub = interaction.options.getSubcommand();
-    if (sub !== 'item') return;
-
-    if (!member.permissions.has('Administrator')) {
-      return interaction.editReply({ content: '管理者のみ実行可能です。' });
-    }
-
+  if (interaction.isChatInputCommand() && interaction.commandName === 'shop') {
     const embed = new EmbedBuilder()
       .setTitle('🛍️ アイテムショップ')
-      .setDescription('戦略アイテム一覧');
+      .setDescription('購入するアイテムを選んでください。');
 
-    itemData.forEach(item => {
-      embed.addFields({ name: item.label, value: `価格: ${item.price}p`, inline: true });
-    });
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('shop_menu')
+      .setPlaceholder('アイテムを選択')
+      .addOptions(
+        itemData.map(item => ({
+          label: item.label,
+          description: item.description,
+          value: item.id
+        }))
+      );
 
-    const rows = [];
-    for (let i = 0; i < itemData.length; i += 5) {
-      rows.push(new ActionRowBuilder().addComponents(
-        itemData.slice(i, i + 5).map(item =>
-          new ButtonBuilder()
-            .setCustomId(`item_${item.id}`)
-            .setLabel(item.label)
-            .setStyle(ButtonStyle.Secondary)
-        )
-      ));
-    }
-
-    return interaction.editReply({ embeds: [embed], components: rows });
+    const row = new ActionRowBuilder().addComponents(menu);
+    await interaction.reply({ embeds: [embed], components: [row] });
   }
 });
 client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isButton()) return;
+  if (!interaction.isStringSelectMenu()) return;
+  if (interaction.customId !== 'shop_menu') return;
 
   const userId = interaction.user.id;
-  const itemId = interaction.customId.replace('item_', '');
-  const item = itemData.find(i => i.id === itemId);
-  if (!item) return;
+  const selectedItemId = interaction.values[0];
+  const item = itemData.find(i => i.id === selectedItemId);
 
-  const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-  if (!userData || userData.point < item.price) {
+  if (!item) {
+    return interaction.reply({ content: '無効なアイテムです。', ephemeral: true });
+  }
+
+  const { data: user } = await supabase.from('points').select('*').eq('user_id', userId).single();
+  if (!user || user.point < item.price) {
     return interaction.reply({ content: 'ポイントが不足しています。', ephemeral: true });
   }
 
-  // 🎭 名前変更（自分）→ モーダル表示（※ deferReply 不要）
-  if (itemId === 'rename_self') {
+  // 🎭 名前変更（自分）だけモーダルを表示
+  if (item.id === 'rename_self') {
     const modal = new ModalBuilder()
       .setCustomId('modal_rename_self')
       .setTitle('名前変更（自分）')
@@ -122,25 +83,25 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.showModal(modal);
   }
 
-  // 🛡️ シールド使用（直接処理）
-  if (itemId === 'shield') {
+  // 🛡️ シールド購入処理
+  if (item.id === 'shield') {
     const now = new Date();
-    const until = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24時間後
+    const until = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24h
 
-    if (userData.shield_until && new Date(userData.shield_until) > now) {
-      return interaction.reply({ content: 'すでにシールドが有効です。', ephemeral: true });
+    if (user.shield_until && new Date(user.shield_until) > now) {
+      return interaction.reply({ content: 'すでにシールド中です。', ephemeral: true });
     }
 
     await supabase.from('points').update({
-      point: userData.point - item.price,
+      point: user.point - item.price,
       shield_until: until.toISOString()
     }).eq('user_id', userId);
 
     return interaction.reply({ content: '🛡️ シールドを展開しました！', ephemeral: true });
   }
 
-  // 🔭 スコープ → モーダル表示（対象ID入力）
-  if (itemId === 'scope') {
+  // 🔭 望遠鏡 → モーダルで対象ユーザーID入力
+  if (item.id === 'scope') {
     const modal = new ModalBuilder()
       .setCustomId('modal_scope')
       .setTitle('🔭 シールド確認')
@@ -167,17 +128,17 @@ client.on(Events.InteractionCreate, async interaction => {
 
     const newName = interaction.fields.getTextInputValue('new_name');
     const member = await interaction.guild.members.fetch(userId);
-    const updatedNick = `【${member.displayName.split('】')[0].replace('【', '')}】${newName}`;
+    const newNick = `【${member.displayName.split('】')[0].replace('【', '')}】${newName}`;
 
-    await member.setNickname(updatedNick).catch(() => {});
-    const { data } = await supabase.from('points').select('*').eq('user_id', userId).single();
+    await member.setNickname(newNick).catch(() => {});
+    const { data: user } = await supabase.from('points').select('*').eq('user_id', userId).single();
 
-    await supabase.from('points').update({ point: data.point - 1000 }).eq('user_id', userId);
+    await supabase.from('points').update({ point: user.point - 1000 }).eq('user_id', userId);
 
-    return interaction.editReply({ content: `✅ 名前を「${updatedNick}」に変更しました。` });
+    return interaction.editReply({ content: `✅ 名前を「${newNick}」に変更しました。` });
   }
 
-  // 🔭 スコープ使用：対象ユーザーのシールド確認
+  // 🔭 スコープ（相手のシールド確認）
   if (interaction.customId === 'modal_scope') {
     await interaction.deferReply({ ephemeral: true });
 
@@ -195,16 +156,10 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 const commands = [
-  new SlashCommandBuilder().setName('register').setDescription('初期登録'),
-  new SlashCommandBuilder().setName('profile').setDescription('プロフィール確認'),
-  new SlashCommandBuilder()
-    .setName('shop')
-    .setDescription('ショップ表示')
-    .addSubcommand(s => s.setName('item').setDescription('アイテム一覧を表示'))
+  new SlashCommandBuilder().setName('shop').setDescription('ショップを開く')
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
-
 (async () => {
   try {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
