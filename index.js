@@ -96,18 +96,16 @@ client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isButton()) return;
 
   const userId = interaction.user.id;
-  await interaction.deferReply({ ephemeral: true });
-
   const itemId = interaction.customId.replace('item_', '');
   const item = itemData.find(i => i.id === itemId);
-  if (!item) return interaction.editReply({ content: '無効なアイテムです。' });
+  if (!item) return;
 
   const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
   if (!userData || userData.point < item.price) {
-    return interaction.editReply({ content: 'ポイントが不足しています。' });
+    return interaction.reply({ content: 'ポイントが不足しています。', ephemeral: true });
   }
 
-  // 🎭 名前変更（自分） → モーダルで新しい名前を入力
+  // 🎭 名前変更（自分）→ モーダル表示（※ deferReply 不要）
   if (itemId === 'rename_self') {
     const modal = new ModalBuilder()
       .setCustomId('modal_rename_self')
@@ -124,13 +122,13 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.showModal(modal);
   }
 
-  // 🛡️ シールド使用
+  // 🛡️ シールド使用（直接処理）
   if (itemId === 'shield') {
     const now = new Date();
     const until = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24時間後
 
     if (userData.shield_until && new Date(userData.shield_until) > now) {
-      return interaction.editReply({ content: 'すでにシールドが有効です。' });
+      return interaction.reply({ content: 'すでにシールドが有効です。', ephemeral: true });
     }
 
     await supabase.from('points').update({
@@ -138,10 +136,10 @@ client.on(Events.InteractionCreate, async interaction => {
       shield_until: until.toISOString()
     }).eq('user_id', userId);
 
-    return interaction.editReply({ content: '🛡️ シールドを展開しました！' });
+    return interaction.reply({ content: '🛡️ シールドを展開しました！', ephemeral: true });
   }
 
-  // 🔭 望遠鏡使用（モーダルで対象ID入力）
+  // 🔭 スコープ → モーダル表示（対象ID入力）
   if (itemId === 'scope') {
     const modal = new ModalBuilder()
       .setCustomId('modal_scope')
@@ -163,7 +161,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
   const userId = interaction.user.id;
 
-  // 🎭 自分の名前変更
+  // 🎭 名前変更（自分）
   if (interaction.customId === 'modal_rename_self') {
     await interaction.deferReply({ ephemeral: true });
 
@@ -179,7 +177,7 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.editReply({ content: `✅ 名前を「${updatedNick}」に変更しました。` });
   }
 
-  // 🔭 スコープ使用：対象ユーザーがシールド中か確認
+  // 🔭 スコープ使用：対象ユーザーのシールド確認
   if (interaction.customId === 'modal_scope') {
     await interaction.deferReply({ ephemeral: true });
 
@@ -189,7 +187,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     const shielded = target && target.shield_until && new Date(target.shield_until) > now;
 
-    await supabase.from('points').update({ point: supabase.literal(`point - 100`) }).eq('user_id', userId);
+    await supabase.from('points').update({ point: supabase.literal('point - 100') }).eq('user_id', userId);
 
     return interaction.editReply({
       content: shielded ? '🔭 相手は現在シールド中です。' : '🔭 相手はシールドを使っていません。'
