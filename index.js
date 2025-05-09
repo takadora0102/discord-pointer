@@ -1,5 +1,3 @@
-// 修正済み完全版：セレクトメニュー対応 ＋ エラーハンドリング（Unknown interaction回避）
-
 const {
   Client, GatewayIntentBits, Partials, REST, Routes,
   SlashCommandBuilder, EmbedBuilder, StringSelectMenuBuilder,
@@ -29,10 +27,10 @@ const itemData = [
 client.once('ready', () => {
   console.log('Bot Ready');
 });
-
 client.on(Events.InteractionCreate, async interaction => {
   try {
     if (interaction.isChatInputCommand() && interaction.commandName === 'shop') {
+      await interaction.deferReply();
       const embed = new EmbedBuilder()
         .setTitle('🛍️ アイテムショップ')
         .setDescription('購入するアイテムを選んでください。');
@@ -49,21 +47,21 @@ client.on(Events.InteractionCreate, async interaction => {
         );
 
       const row = new ActionRowBuilder().addComponents(menu);
-      await interaction.reply({ embeds: [embed], components: [row] });
+      await interaction.editReply({ embeds: [embed], components: [row] });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'shop_menu') {
+      await interaction.deferReply({ ephemeral: true });
       const userId = interaction.user.id;
       const selectedItemId = interaction.values[0];
       const item = itemData.find(i => i.id === selectedItemId);
 
-      if (!item) return interaction.reply({ content: '無効なアイテムです。', ephemeral: true });
+      if (!item) return interaction.editReply({ content: '無効なアイテムです。' });
 
       const { data: user } = await supabase.from('points').select('*').eq('user_id', userId).single();
       if (!user || user.point < item.price) {
-        return interaction.reply({ content: 'ポイントが不足しています。', ephemeral: true });
+        return interaction.editReply({ content: 'ポイントが不足しています。' });
       }
-
       if (item.id === 'rename_self') {
         const modal = new ModalBuilder()
           .setCustomId('modal_rename_self')
@@ -77,7 +75,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 .setRequired(true)
             )
           );
-        return interaction.showModal(modal);
+        return interaction.showModal(modal); // ⚠ deferReply しない
       }
 
       if (item.id === 'shield') {
@@ -85,7 +83,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const until = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
         if (user.shield_until && new Date(user.shield_until) > now) {
-          return interaction.reply({ content: 'すでにシールド中です。', ephemeral: true });
+          return interaction.editReply({ content: 'すでにシールド中です。' });
         }
 
         await supabase.from('points').update({
@@ -93,7 +91,7 @@ client.on(Events.InteractionCreate, async interaction => {
           shield_until: until.toISOString()
         }).eq('user_id', userId);
 
-        return interaction.reply({ content: '🛡️ シールドを展開しました！', ephemeral: true });
+        return interaction.editReply({ content: '🛡️ シールドを展開しました！' });
       }
 
       if (item.id === 'scope') {
@@ -109,10 +107,9 @@ client.on(Events.InteractionCreate, async interaction => {
                 .setRequired(true)
             )
           );
-        return interaction.showModal(modal);
+        return interaction.showModal(modal); // ⚠ deferReply しない
       }
     }
-
     if (interaction.isModalSubmit()) {
       const userId = interaction.user.id;
 
@@ -151,12 +148,12 @@ client.on(Events.InteractionCreate, async interaction => {
     console.error('💥 インタラクション処理中にエラー:', err);
   }
 });
-
 const commands = [
   new SlashCommandBuilder().setName('shop').setDescription('ショップを開く')
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
+
 (async () => {
   try {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
