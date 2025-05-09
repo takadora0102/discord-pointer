@@ -1,3 +1,19 @@
+const { Client, GatewayIntentBits, Partials, ModalBuilder, ActionRowBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { createClient } = require('@supabase/supabase-js');
+require('dotenv').config();
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages
+  ],
+  partials: [Partials.Channel]
+});
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const cooldowns = new Map();
 const activeShields = new Map();
 
@@ -129,3 +145,4 @@ client.on('interactionCreate', async interaction => {
     }
   }
 });
+client.login(process.env.DISCORD_TOKEN);
