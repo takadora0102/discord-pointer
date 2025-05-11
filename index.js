@@ -9,10 +9,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
-  EmbedBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  Events
+  EmbedBuilder
 } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
@@ -28,6 +25,7 @@ const client = new Client({
 });
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
 const roleSettings = {
   'SLAVE': { price: 0, payout: 1, limit: 20 },
   'SERF': { price: 0, payout: 5, limit: 20 },
@@ -108,10 +106,11 @@ client.on('interactionCreate', async interaction => {
   const member = await interaction.guild.members.fetch(userId);
 
   if (interaction.commandName === 'register') {
-    const { data: exists } = await supabase.from('points').select('user_id').eq('user_id', userId).single();
+    await interaction.deferReply({ ephemeral: false });
 
+    const { data: exists } = await supabase.from('points').select('user_id').eq('user_id', userId).single();
     if (exists) {
-      return interaction.reply({ content: '✅ 既に登録済みです。', ephemeral: true });
+      return interaction.editReply({ content: '✅ 既に登録済みです。' });
     }
 
     const newNick = `【SERF】${member.user.username}`;
@@ -140,15 +139,17 @@ client.on('interactionCreate', async interaction => {
     });
 
     if (error) {
-      return interaction.reply({ content: '❌ 登録に失敗しました。管理者に連絡してください。', ephemeral: true });
+      return interaction.editReply({ content: '❌ 登録に失敗しました。管理者に連絡してください。' });
     }
 
-    return interaction.reply({ content: '🎉 登録完了！1000p を付与しました。', ephemeral: false });
+    return interaction.editReply({ content: '🎉 登録完了！1000p を付与しました。' });
   }
   if (interaction.commandName === 'profile') {
+    await interaction.deferReply({ ephemeral: false });
+
     const now = new Date();
     const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!userData) return interaction.reply({ content: '未登録です。/register を先に実行してください。', ephemeral: true });
+    if (!userData) return interaction.editReply({ content: '未登録です。/register を先に実行してください。' });
 
     const member = await interaction.guild.members.fetch(userId);
     const role = member.roles.cache.find(r => r.name !== '@everyone')?.name || 'なし';
@@ -181,7 +182,7 @@ client.on('interactionCreate', async interaction => {
         return `・${log.item_name}（${tgt}, ${log.result}, ${time}）`;
       }).join('\n') || 'なし';
 
-    return interaction.reply({
+    return interaction.editReply({
       content:
         `🧾 **プロフィール情報**\n` +
         `🪙 所持ポイント: ${userData.point}p\n` +
@@ -191,44 +192,46 @@ client.on('interactionCreate', async interaction => {
         `🛡️ シールド状態: ${shieldMsg}\n` +
         `📝 名前変更ロック: ${lockMsg}\n\n` +
         `🎒 **所持アイテム一覧**\n${itemListText}\n\n` +
-        `🕘 **最近のアイテム使用履歴**\n${recent}`,
-      ephemeral: false
+        `🕘 **最近のアイテム使用履歴**\n${recent}`
     });
   }
-
   if (interaction.commandName === 'debt') {
+    await interaction.deferReply({ ephemeral: false });
+
     const action = interaction.options.getString('action');
     const amount = interaction.options.getInteger('amount');
     const now = new Date();
     const due = new Date(now.getTime() + 7 * 86400000).toISOString().split('T')[0];
 
     const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!userData) return interaction.reply({ content: '未登録です。/register を先に実行してください。', ephemeral: true });
+    if (!userData) return interaction.editReply({ content: '未登録です。/register を先に実行してください。' });
 
     if (action === 'borrow') {
-      if (userData.debt > 0) return interaction.reply({ content: '既に借金があります。', ephemeral: true });
-      if (amount > userData.point * 3) return interaction.reply({ content: `借金は最大 ${userData.point * 3}p までです。`, ephemeral: true });
+      if (userData.debt > 0) return interaction.editReply({ content: '既に借金があります。' });
+      if (amount > userData.point * 3) return interaction.editReply({ content: `借金は最大 ${userData.point * 3}p までです。` });
 
       await supabase.from('points')
         .update({ debt: amount, due: due, point: userData.point + amount })
         .eq('user_id', userId);
 
-      return interaction.reply({ content: `${amount}p を借りました。返済額: ${Math.ceil(amount * 1.1)}p`, ephemeral: false });
+      return interaction.editReply({ content: `${amount}p を借りました。返済額: ${Math.ceil(amount * 1.1)}p` });
     }
 
     if (action === 'repay') {
-      if (!userData.debt) return interaction.reply({ content: '借金はありません。', ephemeral: true });
+      if (!userData.debt) return interaction.editReply({ content: '借金はありません。' });
       const total = Math.ceil(userData.debt * 1.1);
-      if (amount < total) return interaction.reply({ content: `返済額が不足しています（必要: ${total}p）`, ephemeral: true });
+      if (amount < total) return interaction.editReply({ content: `返済額が不足しています（必要: ${total}p）` });
 
       await supabase.from('points')
         .update({ point: userData.point - amount, debt: 0, due: null })
         .eq('user_id', userId);
 
-      return interaction.reply({ content: `借金を返済しました！残りポイント: ${userData.point - amount}p`, ephemeral: false });
+      return interaction.editReply({ content: `借金を返済しました！残りポイント: ${userData.point - amount}p` });
     }
   }
   if (interaction.commandName === 'shop') {
+    await interaction.deferReply({ ephemeral: false });
+
     const roleEmbed = new EmbedBuilder()
       .setTitle('👑 ロールショップ')
       .setDescription('上位称号を購入できます')
@@ -261,27 +264,28 @@ client.on('interactionCreate', async interaction => {
       });
     }
 
-    return interaction.reply({
-      embeds: [roleEmbed, itemEmbed],
-      ephemeral: false
+    return interaction.editReply({
+      embeds: [roleEmbed, itemEmbed]
     });
   }
   if (interaction.commandName === 'buy') {
+    await interaction.deferReply({ ephemeral: false });
+
     const input = interaction.options.getString('item');
     const now = new Date();
 
     const [type, value] = input.split(':');
     if (!type || !value) {
-      return interaction.reply({ content: '❌ 正しい形式で入力してください（例：item:shield / role:FREEMAN）', ephemeral: true });
+      return interaction.editReply({ content: '❌ 正しい形式で入力してください（例：item:shield / role:FREEMAN）' });
     }
 
     const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!userData) return interaction.reply({ content: '未登録です。まずは /register を実行してください。', ephemeral: true });
+    if (!userData) return interaction.editReply({ content: '未登録です。まずは /register を実行してください。' });
 
     if (type === 'item') {
       const price = itemList[value];
-      if (!price) return interaction.reply({ content: '❌ 無効なアイテムIDです。', ephemeral: true });
-      if (userData.point < price) return interaction.reply({ content: '❌ ポイントが不足しています。', ephemeral: true });
+      if (!price) return interaction.editReply({ content: '❌ 無効なアイテムIDです。' });
+      if (userData.point < price) return interaction.editReply({ content: '❌ ポイントが不足しています。' });
 
       const { data: inventory } = await supabase
         .from('item_inventory')
@@ -311,12 +315,12 @@ client.on('interactionCreate', async interaction => {
         used_at: now.toISOString()
       });
 
-      return interaction.reply({ content: `🛒 \`${value}\` を ${price}p で購入しました。`, ephemeral: false });
+      return interaction.editReply({ content: `🛒 \`${value}\` を ${price}p で購入しました。` });
     }
     if (type === 'role') {
       const roleInfo = roleSettings[value];
       if (!roleInfo || roleInfo.price === 0 || ['GRAND DUKE', 'KING', 'EMPEROR'].includes(value)) {
-        return interaction.reply({ content: '❌ このロールは購入できません。', ephemeral: true });
+        return interaction.editReply({ content: '❌ このロールは購入できません。' });
       }
 
       const member = await interaction.guild.members.fetch(userId);
@@ -327,12 +331,12 @@ client.on('interactionCreate', async interaction => {
       const lower = Object.entries(roleSettings)
         .some(([r, s]) => s.price < roleInfo.price && roles.includes(r));
 
-      if (higher) return interaction.reply({ content: '❌ 上位ロールを既に所持しています。', ephemeral: true });
-      if (!lower) return interaction.reply({ content: '❌ 前提ロールを所持していません。', ephemeral: true });
-      if (userData.point < roleInfo.price) return interaction.reply({ content: '❌ ポイントが不足しています。', ephemeral: true });
+      if (higher) return interaction.editReply({ content: '❌ 上位ロールを既に所持しています。' });
+      if (!lower) return interaction.editReply({ content: '❌ 前提ロールを所持していません。' });
+      if (userData.point < roleInfo.price) return interaction.editReply({ content: '❌ ポイントが不足しています。' });
 
       const newRole = interaction.guild.roles.cache.find(r => r.name === value);
-      if (!newRole) return interaction.reply({ content: '❌ ロールが見つかりません。', ephemeral: true });
+      if (!newRole) return interaction.editReply({ content: '❌ ロールが見つかりません。' });
 
       await member.roles.add(newRole);
       const nickname = `【${value}】${member.user.username}`;
@@ -342,18 +346,20 @@ client.on('interactionCreate', async interaction => {
         .update({ point: userData.point - roleInfo.price })
         .eq('user_id', userId);
 
-      return interaction.reply({ content: `✅ \`${value}\` を購入し、ロールを付与しました！`, ephemeral: false });
+      return interaction.editReply({ content: `✅ \`${value}\` を購入し、ロールを付与しました！` });
     }
 
-    return interaction.reply({ content: '❌ 無効な形式です（item:xxx / role:xxx）', ephemeral: true });
+    return interaction.editReply({ content: '❌ 無効な形式です（item:xxx / role:xxx）' });
   }
   if (interaction.commandName === 'use') {
+    await interaction.deferReply({ ephemeral: false });
+
     const itemId = interaction.options.getString('item');
     const targetUser = interaction.options.getUser('user');
     const now = new Date();
 
     const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!userData) return interaction.reply({ content: '未登録です。', ephemeral: true });
+    if (!userData) return interaction.editReply({ content: '未登録です。' });
 
     const { data: inventory } = await supabase
       .from('item_inventory')
@@ -363,7 +369,7 @@ client.on('interactionCreate', async interaction => {
       .single();
 
     if (!inventory || inventory.quantity < 1) {
-      return interaction.reply({ content: '❌ 所持していないアイテムです。', ephemeral: true });
+      return interaction.editReply({ content: '❌ 所持していないアイテムです。' });
     }
 
     await supabase.from('item_inventory')
@@ -381,12 +387,12 @@ client.on('interactionCreate', async interaction => {
         result: 'success',
         used_at: now.toISOString()
       });
-      return interaction.reply({ content: '🛡️ シールドを使用しました。', ephemeral: false });
+      return interaction.editReply({ content: '🛡️ シールドを使用しました。' });
     }
 
     // スコープ処理
     if (itemId === 'scope') {
-      if (!targetUser) return interaction.reply({ content: '❌ 対象ユーザーを指定してください。', ephemeral: true });
+      if (!targetUser) return interaction.editReply({ content: '❌ 対象ユーザーを指定してください。' });
       const { data: targetData } = await supabase.from('points').select('shield_until').eq('user_id', targetUser.id).single();
       const shielded = targetData?.shield_until && new Date(targetData.shield_until) > now;
 
@@ -398,16 +404,15 @@ client.on('interactionCreate', async interaction => {
         used_at: now.toISOString()
       });
 
-      return interaction.reply({
+      return interaction.editReply({
         content: shielded
           ? `${targetUser.username} は現在🛡️シールド中です。`
-          : `${targetUser.username} はシールド未使用です。`,
-        ephemeral: false
+          : `${targetUser.username} はシールド未使用です。`
       });
     }
     const needsTarget = ['rename_target_s', 'rename_target_a', 'rename_target_b', 'rename_target_c', 'timeout_s'];
     if (needsTarget.includes(itemId) && !targetUser) {
-      return interaction.reply({ content: '❌ 対象ユーザーを指定してください。', ephemeral: true });
+      return interaction.editReply({ content: '❌ 対象ユーザーを指定してください。' });
     }
 
     const rolePriority = ['SLAVE', 'SERF', 'FREEMAN', 'LOW NOBLE', 'HIGH NOBLE', 'GRAND DUKE', 'KING', 'EMPEROR'];
@@ -421,7 +426,7 @@ client.on('interactionCreate', async interaction => {
       : { data: null };
 
     if (targetPoints?.shield_until && new Date(targetPoints.shield_until) > now) {
-      return interaction.reply({ content: '🛡️ 相手は現在シールド中です。', ephemeral: true });
+      return interaction.editReply({ content: '🛡️ 相手は現在シールド中です。' });
     }
 
     let success = true;
@@ -438,9 +443,10 @@ client.on('interactionCreate', async interaction => {
     });
 
     if (!success) {
-      return interaction.reply({ content: '❌ アイテム使用に失敗しました（成功率50%）', ephemeral: false });
+      return interaction.editReply({ content: '❌ アイテム使用に失敗しました（成功率50%）' });
     }
 
+    // 名前変更（相手）
     if (itemId.startsWith('rename_target_')) {
       const lockMin = { rename_target_s: 60, rename_target_a: 30, rename_target_b: 20, rename_target_c: 10 }[itemId];
       const lockUntil = new Date(now.getTime() + lockMin * 60000).toISOString();
@@ -465,7 +471,7 @@ client.on('interactionCreate', async interaction => {
 
     if (itemId === 'timeout_s') {
       await targetMember.timeout(5 * 60 * 1000, 'アイテム使用によるタイムアウト');
-      return interaction.reply({ content: `⏱️ ${targetUser.username} を5分間タイムアウトしました。`, ephemeral: false });
+      return interaction.editReply({ content: `⏱️ ${targetUser.username} を5分間タイムアウトしました。` });
     }
 
     if (itemId === 'rename_self') {
@@ -487,6 +493,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 });
+
 client.on('interactionCreate', async interaction => {
   if (interaction.isModalSubmit()) {
     const userId = interaction.user.id;
@@ -564,7 +571,7 @@ client.on('messageCreate', async message => {
     await supabase.from('message_logs').update({ count: count + 1 }).eq('user_id', userId).eq('date', today);
   }
 });
-// 自動返済処理サーバー（Renderやcronから呼び出す）
+// 自動返済処理（Renderやcronから呼び出す）
 const http = require('http');
 const PORT = process.env.PORT || 3000;
 
@@ -612,6 +619,7 @@ http.createServer(async (req, res) => {
         }
       }
     }
+
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Repay check completed.');
   } else {
