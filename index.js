@@ -352,146 +352,162 @@ client.on('interactionCreate', async interaction => {
     return interaction.editReply({ content: '❌ 無効な形式です（item:xxx / role:xxx）' });
   }
   if (interaction.commandName === 'use') {
-    await interaction.deferReply({ ephemeral: false });
+  await interaction.deferReply({ ephemeral: false });
 
-    const itemId = interaction.options.getString('item');
-    const targetUser = interaction.options.getUser('user');
-    const now = new Date();
+  const itemId = interaction.options.getString('item');
+  const targetUser = interaction.options.getUser('user');
+  const now = new Date();
 
-    const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!userData) return interaction.editReply({ content: '未登録です。' });
+  const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
+  if (!userData) return interaction.editReply({ content: '未登録です。' });
 
-    const { data: inventory } = await supabase
-      .from('item_inventory')
-      .select('quantity')
-      .eq('user_id', userId)
-      .eq('item_name', itemId)
-      .single();
+  // 🔍 安全な在庫チェック（.single()を使わない）
+  const { data: inventoryList, error: inventoryError } = await supabase
+    .from('item_inventory')
+    .select('quantity')
+    .eq('user_id', userId)
+    .eq('item_name', itemId)
+    .limit(1);
 
-    if (!inventory || inventory.quantity < 1) {
-      return interaction.editReply({ content: '❌ 所持していないアイテムです。' });
-    }
+  if (inventoryError) {
+    console.error('Supabaseエラー（item_inventory取得）:', inventoryError);
+    return interaction.editReply({ content: '⚠️ データベースエラーが発生しました。' });
+  }
 
-    await supabase.from('item_inventory')
-      .update({ quantity: inventory.quantity - 1 })
-      .eq('user_id', userId)
-      .eq('item_name', itemId);
+  const quantity = inventoryList?.[0]?.quantity ?? 0;
 
-    // シールド処理
-    if (itemId === 'shield') {
-      const until = new Date(now.getTime() + 86400000).toISOString();
-      await supabase.from('points').update({ shield_until: until }).eq('user_id', userId);
-      await supabase.from('item_logs').insert({
-        user_id: userId,
-        item_name: itemId,
-        result: 'success',
-        used_at: now.toISOString()
-      });
-      return interaction.editReply({ content: '🛡️ シールドを使用しました。' });
-    }
+  if (quantity < 1) {
+    console.warn(`アイテム未所持: user=${userId}, item=${itemId}, quantity=${quantity}`);
+    return interaction.editReply({ content: '❌ 所持していないアイテムです。' });
+  }
 
-    // スコープ処理
-    if (itemId === 'scope') {
-      if (!targetUser) return interaction.editReply({ content: '❌ 対象ユーザーを指定してください。' });
-      const { data: targetData } = await supabase.from('points').select('shield_until').eq('user_id', targetUser.id).single();
-      const shielded = targetData?.shield_until && new Date(targetData.shield_until) > now;
+  // ✅ 在庫を1減らす
+  await supabase.from('item_inventory')
+    .update({ quantity: quantity - 1 })
+    .eq('user_id', userId)
+    .eq('item_name', itemId);
 
-      await supabase.from('item_logs').insert({
-        user_id: userId,
-        item_name: itemId,
-        target_id: targetUser.id,
-        result: shielded ? 'shielded' : 'unshielded',
-        used_at: now.toISOString()
-      });
+  // 🛡️ シールド
+  if (itemId === 'shield') {
+    const until = new Date(now.getTime() + 86400000).toISOString();
+    await supabase.from('points').update({ shield_until: until }).eq('user_id', userId);
+    await supabase.from('item_logs').insert({
+      user_id: userId,
+      item_name: itemId,
+      result: 'success',
+      used_at: now.toISOString()
+    });
+    return interaction.editReply({ content: '🛡️ シールドを使用しました。' });
+  }
 
-      return interaction.editReply({
-        content: shielded
-          ? `${targetUser.username} は現在🛡️シールド中です。`
-          : `${targetUser.username} はシールド未使用です。`
-      });
-    }
-    const needsTarget = ['rename_target_s', 'rename_target_a', 'rename_target_b', 'rename_target_c', 'timeout_s'];
-    if (needsTarget.includes(itemId) && !targetUser) {
-      return interaction.editReply({ content: '❌ 対象ユーザーを指定してください。' });
-    }
+  // 🔍 スコープ（相手のシールド確認）
+  if (itemId === 'scope') {
+    if (!targetUser) return interaction.editReply({ content: '❌ 対象ユーザーを指定してください。' });
 
-    const rolePriority = ['SLAVE', 'SERF', 'FREEMAN', 'LOW NOBLE', 'HIGH NOBLE', 'GRAND DUKE', 'KING', 'EMPEROR'];
-    const getRank = m => m.roles.cache.map(r => rolePriority.indexOf(r.name)).filter(i => i >= 0).reduce((a, b) => Math.max(a, b), -1);
-
-    const member = await interaction.guild.members.fetch(userId);
-    const targetMember = targetUser && await interaction.guild.members.fetch(targetUser.id);
-
-    const { data: targetPoints } = targetUser
-      ? await supabase.from('points').select('shield_until').eq('user_id', targetUser.id).single()
-      : { data: null };
-
-    if (targetPoints?.shield_until && new Date(targetPoints.shield_until) > now) {
-      return interaction.editReply({ content: '🛡️ 相手は現在シールド中です。' });
-    }
-
-    let success = true;
-    if (targetUser && getRank(targetMember) > getRank(member)) {
-      success = Math.random() < 0.5;
-    }
+    const { data: targetData } = await supabase.from('points').select('shield_until').eq('user_id', targetUser.id).single();
+    const shielded = targetData?.shield_until && new Date(targetData.shield_until) > now;
 
     await supabase.from('item_logs').insert({
       user_id: userId,
       item_name: itemId,
-      target_id: targetUser?.id || null,
-      result: success ? 'success' : 'fail',
+      target_id: targetUser.id,
+      result: shielded ? 'shielded' : 'unshielded',
       used_at: now.toISOString()
     });
 
-    if (!success) {
-      return interaction.editReply({ content: '❌ アイテム使用に失敗しました（成功率50%）' });
-    }
-
-    // 名前変更（相手）
-    if (itemId.startsWith('rename_target_')) {
-      const lockMin = { rename_target_s: 60, rename_target_a: 30, rename_target_b: 20, rename_target_c: 10 }[itemId];
-      const lockUntil = new Date(now.getTime() + lockMin * 60000).toISOString();
-      await supabase.from('points').update({ name_locked_: lockUntil }).eq('user_id', targetUser.id);
-
-      return interaction.showModal(
-        new ModalBuilder()
-          .setCustomId(`rename_target_modal-${targetUser.id}`)
-          .setTitle('相手の名前変更')
-          .addComponents(
-            new ActionRowBuilder().addComponents(
-              new TextInputBuilder()
-                .setCustomId('nickname')
-                .setLabel('新しいニックネーム')
-                .setStyle(TextInputStyle.Short)
-                .setMaxLength(20)
-                .setRequired(true)
-            )
-          )
-      );
-    }
-
-    if (itemId === 'timeout_s') {
-      await targetMember.timeout(5 * 60 * 1000, 'アイテム使用によるタイムアウト');
-      return interaction.editReply({ content: `⏱️ ${targetUser.username} を5分間タイムアウトしました。` });
-    }
-
-    if (itemId === 'rename_self') {
-      return interaction.showModal(
-        new ModalBuilder()
-          .setCustomId('rename_self_modal')
-          .setTitle('自分の名前変更')
-          .addComponents(
-            new ActionRowBuilder().addComponents(
-              new TextInputBuilder()
-                .setCustomId('nickname')
-                .setLabel('新しいニックネーム')
-                .setStyle(TextInputStyle.Short)
-                .setMaxLength(20)
-                .setRequired(true)
-            )
-          )
-      );
-    }
+    return interaction.editReply({
+      content: shielded
+        ? `${targetUser.username} は現在🛡️シールド中です。`
+        : `${targetUser.username} はシールド未使用です。`
+    });
   }
+
+  // 🎯 ターゲットアイテム（名前変更・タイムアウト）
+  const needsTarget = ['rename_target_s', 'rename_target_a', 'rename_target_b', 'rename_target_c', 'timeout_s'];
+  if (needsTarget.includes(itemId) && !targetUser) {
+    return interaction.editReply({ content: '❌ 対象ユーザーを指定してください。' });
+  }
+
+  const rolePriority = ['SLAVE', 'SERF', 'FREEMAN', 'LOW NOBLE', 'HIGH NOBLE', 'GRAND DUKE', 'KING', 'EMPEROR'];
+  const getRank = m => m.roles.cache.map(r => rolePriority.indexOf(r.name)).filter(i => i >= 0).reduce((a, b) => Math.max(a, b), -1);
+
+  const member = await interaction.guild.members.fetch(userId);
+  const targetMember = targetUser && await interaction.guild.members.fetch(targetUser.id);
+
+  const { data: targetPoints } = targetUser
+    ? await supabase.from('points').select('shield_until').eq('user_id', targetUser.id).single()
+    : { data: null };
+
+  if (targetPoints?.shield_until && new Date(targetPoints.shield_until) > now) {
+    return interaction.editReply({ content: '🛡️ 相手は現在シールド中です。' });
+  }
+
+  let success = true;
+  if (targetUser && getRank(targetMember) > getRank(member)) {
+    success = Math.random() < 0.5;
+  }
+
+  await supabase.from('item_logs').insert({
+    user_id: userId,
+    item_name: itemId,
+    target_id: targetUser?.id || null,
+    result: success ? 'success' : 'fail',
+    used_at: now.toISOString()
+  });
+
+  if (!success) {
+    return interaction.editReply({ content: '❌ アイテム使用に失敗しました（成功率50%）' });
+  }
+
+  // 📝 名前変更（ターゲット）
+  if (itemId.startsWith('rename_target_')) {
+    const lockMin = { rename_target_s: 60, rename_target_a: 30, rename_target_b: 20, rename_target_c: 10 }[itemId];
+    const lockUntil = new Date(now.getTime() + lockMin * 60000).toISOString();
+    await supabase.from('points').update({ name_locked_: lockUntil }).eq('user_id', targetUser.id);
+
+    return interaction.showModal(
+      new ModalBuilder()
+        .setCustomId(`rename_target_modal-${targetUser.id}`)
+        .setTitle('相手の名前変更')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('nickname')
+              .setLabel('新しいニックネーム')
+              .setStyle(TextInputStyle.Short)
+              .setMaxLength(20)
+              .setRequired(true)
+          )
+        )
+    );
+  }
+
+  // ⏱️ タイムアウト
+  if (itemId === 'timeout_s') {
+    await targetMember.timeout(5 * 60 * 1000, 'アイテム使用によるタイムアウト');
+    return interaction.editReply({ content: `⏱️ ${targetUser.username} を5分間タイムアウトしました。` });
+  }
+
+  // 🧍 名前変更（自分）
+  if (itemId === 'rename_self') {
+    return interaction.showModal(
+      new ModalBuilder()
+        .setCustomId('rename_self_modal')
+        .setTitle('自分の名前変更')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('nickname')
+              .setLabel('新しいニックネーム')
+              .setStyle(TextInputStyle.Short)
+              .setMaxLength(20)
+              .setRequired(true)
+          )
+        )
+    );
+  }
+}
+
 });
 
 client.on('interactionCreate', async interaction => {
