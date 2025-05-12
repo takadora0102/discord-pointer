@@ -1,651 +1,787 @@
-const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  SlashCommandBuilder,
-  REST,
-  Routes,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  ActionRowBuilder,
-  EmbedBuilder
-} = require('discord.js');
+const { Client, GatewayIntentBits, ApplicationCommandOptionType, ModalBuilder, 
+TextInputBuilder, ActionRowBuilder, TextInputStyle } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config();
+const express = require('express');
 
+// Initialize Discord client with needed intents
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ],
-  partials: [Partials.Channel]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
+    ]
 });
 
+// Initialize Supabase client (use your actual Supabase URL and API key from environment variables)
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+// Configuration for role-based settings (all limits set to Infinity)
 const roleSettings = {
-  'SLAVE': { price: 0, payout: 1, limit: 20 },
-  'SERF': { price: 0, payout: 5, limit: 20 },
-  'FREEMAN': { price: 10000, payout: 10, limit: 30 },
-  'LOW NOBLE': { price: 50000, payout: 20, limit: 40 },
-  'HIGH NOBLE': { price: 250000, payout: 30, limit: 50 },
-  'GRAND DUKE': { price: 500000, payout: 50, limit: Infinity },
-  'KING': { price: 500000, payout: 50, limit: Infinity },
-  'EMPEROR': { price: 1000000, payout: 50, limit: Infinity }
+    // Example roles and payouts – replace keys with your server's role IDs or names as needed
+    "Bronze":   { payout: 10, limit: Infinity },
+    "Silver":   { payout: 20, limit: Infinity },
+    "Gold":     { payout: 30, limit: Infinity },
+    "Platinum": { payout: 50, limit: Infinity }
 };
+// If a user has none of the above roles, this default payout will be used
+const defaultPayout = 5;  // default points per message for unranked users
+const POINT_COOLDOWN = 120000;  // 120,000 ms = 2 minutes cooldown for message points
 
-const itemList = {
-  rename_self: 1000,
-  rename_target_s: 10000,
-  rename_target_a: 5000,
-  rename_target_b: 3500,
-  rename_target_c: 2000,
-  timeout_s: 10000,
-  shield: 300,
-  scope: 100
-};
-const commands = [
-  new SlashCommandBuilder().setName('register').setDescription('初回登録'),
-  new SlashCommandBuilder().setName('profile').setDescription('プロフィールを表示'),
-  new SlashCommandBuilder()
-    .setName('debt')
-    .setDescription('借金または返済')
-    .addStringOption(opt =>
-      opt.setName('action')
-        .setDescription('borrow（借りる） or repay（返す）')
-        .setRequired(true)
-        .addChoices(
-          { name: '借りる', value: 'borrow' },
-          { name: '返す', value: 'repay' }
-        ))
-    .addIntegerOption(opt =>
-      opt.setName('amount')
-        .setDescription('金額')
-        .setRequired(true)),
-  new SlashCommandBuilder()
-    .setName('shop')
-    .setDescription('ロールとアイテムショップを表示'),
-  new SlashCommandBuilder()
-    .setName('buy')
-    .setDescription('商品を購入')
-    .addStringOption(opt =>
-      opt.setName('item')
-        .setDescription('item:ID または role:NAME')
-        .setRequired(true)),
-  new SlashCommandBuilder()
-    .setName('use')
-    .setDescription('アイテムを使用')
-    .addStringOption(opt =>
-      opt.setName('item')
-        .setDescription('アイテムID')
-        .setRequired(true))
-    .addUserOption(opt =>
-      opt.setName('user')
-        .setDescription('対象ユーザー（必要な場合）'))
-].map(cmd => cmd.toJSON());
+// In-memory trackers for message cooldowns and scope usage
+const lastMessageTime = {};
+const scopeUsers = new Set();
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-(async () => {
-  try {
-    await rest.put(
-      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-      { body: commands }
-    );
-    console.log('✅ Slashコマンド登録完了');
-    client.login(process.env.DISCORD_TOKEN);
-  } catch (err) {
-    console.error(err);
-  }
-})();
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  const userId = interaction.user.id;
-  const member = await interaction.guild.members.fetch(userId);
-
-  if (interaction.commandName === 'register') {
-    await interaction.deferReply({ ephemeral: false });
-
-    const { data: exists } = await supabase.from('points').select('user_id').eq('user_id', userId).single();
-    if (exists) {
-      return interaction.editReply({ content: '✅ 既に登録済みです。' });
+// Define shop items and their properties
+const items = {
+    "shield": {
+        name: "Shield(シールド)", price: 100,
+        description: "一定時間あらゆる攻撃から守ります"
+    },
+    "scope": {
+        name: "Scope(スコープ)", price: 80,
+        description: "次の攻撃を必ず成功させます"
+    },
+    "timeout": {
+        name: "Timeout(タイムアウト)", price: 120,
+        description: "対象を一定時間ミュートにします"
+    },
+    "rename_self": {
+        name: "Rename Ticket(自分用)", price: 50,
+        description: "自分のニックネームを変更します"
+    },
+    "rename_target": {
+        name: "Rename Ticket(他人用)", price: 100,
+        description: "他人のニックネームを変更します"
+    },
+    "name_lock": {
+        name: "Name Lock(ネームロック)", price: 70,
+        description: "自分のニックネームを一定時間ロックします"
     }
+};
 
-    const newNick = `【SERF】${member.user.username}`;
+// Durations for item effects (in milliseconds)
+const SHIELD_DURATION = 6 * 60 * 60 * 1000;      // 6 hours
+const NAME_LOCK_DURATION = 24 * 60 * 60 * 1000;  // 24 hours
+const TIMEOUT_DURATION = 10 * 60 * 1000;         // 10 minutes
+
+// Register slash commands (global by default, or to a specific guild if GUILD_ID is provided)
+client.once('ready', async () => {
     try {
-      await member.setNickname(newNick);
+        const commandsData = [
+            {
+                name: "register",
+                description: "ゲームにユーザー登録します"
+            },
+            {
+                name: "profile",
+                description: "自分または指定ユーザーのプロフィールを表示します",
+                options: [
+                    {
+                        name: "user",
+                        description: "プロフィールを表示するユーザー（省略時は自分）",
+                        type: ApplicationCommandOptionType.User,
+                        required: false
+                    }
+                ]
+            },
+            {
+                name: "debt",
+                description: "自分の借金情報を表示します"
+            },
+            {
+                name: "shop",
+                description: "ショップの商品一覧を表示します"
+            },
+            {
+                name: "buy",
+                description: "ショップでアイテムを購入します",
+                options: [
+                    {
+                        name: "item",
+                        description: "購入するアイテム名",
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }
+                ]
+            },
+            {
+                name: "use",
+                description: "所持しているアイテムを使用します",
+                options: [
+                    {
+                        name: "item",
+                        description: "使用するアイテム名",
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    },
+                    {
+                        name: "target",
+                        description: "対象ユーザー（アイテムによって必要）",
+                        type: ApplicationCommandOptionType.User,
+                        required: false
+                    }
+                ]
+            }
+        ];
+        if (process.env.GUILD_ID) {
+            // Register commands to a specific guild (for immediate update during development)
+            await client.application.commands.set(commandsData, process.env.GUILD_ID);
+        } else {
+            // Register commands globally (may take some time to propagate)
+            await client.application.commands.set(commandsData);
+        }
+        console.log("Slash commands registered.");
     } catch (err) {
-      console.warn(`ニックネーム変更失敗: ${err.message}`);
+        console.error("Failed to register commands:", err);
     }
+    console.log(`Logged in as ${client.user.tag}!`);
+});
 
-    const role = interaction.guild.roles.cache.find(r => r.name === 'SERF');
-    if (role) {
-      try {
-        await member.roles.add(role);
-      } catch (err) {
-        console.warn(`ロール付与失敗: ${err.message}`);
-      }
-    }
+// Message create event: award points for sending messages (with cooldown per user)
+client.on('messageCreate', async (message) => {
+    if (!message.guild || message.author.bot) return;  // ignore bots or DMs
 
-    const { error } = await supabase.from('points').insert({
-      user_id: userId,
-      point: 1000,
-      debt: 0,
-      due: null,
-      shield_until: null,
-      name_locked_: null
-    });
-
-    if (error) {
-      return interaction.editReply({ content: '❌ 登録に失敗しました。管理者に連絡してください。' });
-    }
-
-    return interaction.editReply({ content: '🎉 登録完了！1000p を付与しました。' });
-  }
-  if (interaction.commandName === 'profile') {
-    await interaction.deferReply({ ephemeral: false });
-
-    const now = new Date();
-    const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!userData) return interaction.editReply({ content: '未登録です。/register を先に実行してください。' });
-
-    const member = await interaction.guild.members.fetch(userId);
-    const role = member.roles.cache.find(r => r.name !== '@everyone')?.name || 'なし';
-
-    const shieldMsg = userData.shield_until && new Date(userData.shield_until) > now
-      ? (() => {
-          const diff = new Date(userData.shield_until) - now;
-          const h = Math.floor(diff / 3600000);
-          const m = Math.floor((diff % 3600000) / 60000);
-          return `残り ${h}時間${m}分`;
-        })()
-      : 'なし';
-
-    const lockMsg = userData.name_locked_ && new Date(userData.name_locked_) > now
-      ? `あと ${Math.ceil((new Date(userData.name_locked_) - now) / 60000)}分`
-      : 'なし';
-
-    const { data: inventory } = await supabase.from('item_inventory').select('*').eq('user_id', userId);
-    const itemListText = inventory?.filter(i => i.quantity > 0)
-      .map(i => `・${i.item_name} ×${i.quantity}`)
-      .join('\n') || 'なし';
-
-    const { data: logs } = await supabase.from('item_logs').select('*').eq('user_id', userId);
-    const recent = logs?.filter(l => l.result !== 'purchased')
-      .sort((a, b) => new Date(b.used_at) - new Date(a.used_at))
-      .slice(0, 5)
-      .map(log => {
-        const time = new Date(log.used_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-        const tgt = log.target_id ? `<@${log.target_id}>` : '自分';
-        return `・${log.item_name}（${tgt}, ${log.result}, ${time}）`;
-      }).join('\n') || 'なし';
-
-    return interaction.editReply({
-      content:
-        `🧾 **プロフィール情報**\n` +
-        `🪙 所持ポイント: ${userData.point}p\n` +
-        `💸 借金（返済額）: ${userData.debt ? Math.ceil(userData.debt * 1.1) + 'p' : 'なし'}\n` +
-        `⏰ 返済期限: ${userData.due || 'なし'}\n` +
-        `👑 現在のロール: ${role}\n` +
-        `🛡️ シールド状態: ${shieldMsg}\n` +
-        `📝 名前変更ロック: ${lockMsg}\n\n` +
-        `🎒 **所持アイテム一覧**\n${itemListText}\n\n` +
-        `🕘 **最近のアイテム使用履歴**\n${recent}`
-    });
-  }
-  if (interaction.commandName === 'debt') {
-    await interaction.deferReply({ ephemeral: false });
-
-    const action = interaction.options.getString('action');
-    const amount = interaction.options.getInteger('amount');
-    const now = new Date();
-    const due = new Date(now.getTime() + 7 * 86400000).toISOString().split('T')[0];
-
-    const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!userData) return interaction.editReply({ content: '未登録です。/register を先に実行してください。' });
-
-    if (action === 'borrow') {
-      if (userData.debt > 0) return interaction.editReply({ content: '既に借金があります。' });
-      if (amount > userData.point * 3) return interaction.editReply({ content: `借金は最大 ${userData.point * 3}p までです。` });
-
-      await supabase.from('points')
-        .update({ debt: amount, due: due, point: userData.point + amount })
-        .eq('user_id', userId);
-
-      return interaction.editReply({ content: `${amount}p を借りました。返済額: ${Math.ceil(amount * 1.1)}p` });
-    }
-
-    if (action === 'repay') {
-      if (!userData.debt) return interaction.editReply({ content: '借金はありません。' });
-      const total = Math.ceil(userData.debt * 1.1);
-      if (amount < total) return interaction.editReply({ content: `返済額が不足しています（必要: ${total}p）` });
-
-      await supabase.from('points')
-        .update({ point: userData.point - amount, debt: 0, due: null })
-        .eq('user_id', userId);
-
-      return interaction.editReply({ content: `借金を返済しました！残りポイント: ${userData.point - amount}p` });
-    }
-  }
-  if (interaction.commandName === 'shop') {
-    await interaction.deferReply({ ephemeral: false });
-
-    const roleEmbed = new EmbedBuilder()
-      .setTitle('👑 ロールショップ')
-      .setDescription('上位称号を購入できます')
-      .setColor(0xffd700);
-
-    const purchasableRoles = Object.entries(roleSettings).filter(
-      ([name, info]) =>
-        info.price > 0 &&
-        !['GRAND DUKE', 'KING', 'EMPEROR'].includes(name)
-    );
-
-    for (const [name, info] of purchasableRoles) {
-      roleEmbed.addFields({
-        name: `/buy role:${name}`,
-        value: `${info.price}p`,
-        inline: false
-      });
-    }
-
-    const itemEmbed = new EmbedBuilder()
-      .setTitle('🛍️ アイテムショップ')
-      .setDescription('以下のアイテムは `/use` コマンドで使用します（購入だけでは効果は発動しません）')
-      .setColor(0x00bfff);
-
-    for (const [id, price] of Object.entries(itemList)) {
-      itemEmbed.addFields({
-        name: `/buy item:${id}`,
-        value: `${price}p`,
-        inline: false
-      });
-    }
-
-    return interaction.editReply({
-      embeds: [roleEmbed, itemEmbed]
-    });
-  }
-  if (interaction.commandName === 'buy') {
-    await interaction.deferReply({ ephemeral: false });
-
-    const input = interaction.options.getString('item');
-    const now = new Date();
-
-    const [type, value] = input.split(':');
-    if (!type || !value) {
-      return interaction.editReply({ content: '❌ 正しい形式で入力してください（例：item:shield / role:FREEMAN）' });
-    }
-
-    const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-    if (!userData) return interaction.editReply({ content: '未登録です。まずは /register を実行してください。' });
-
-    if (type === 'item') {
-      const price = itemList[value];
-      if (!price) return interaction.editReply({ content: '❌ 無効なアイテムIDです。' });
-      if (userData.point < price) return interaction.editReply({ content: '❌ ポイントが不足しています。' });
-
-      const { data: inventory } = await supabase
-        .from('item_inventory')
-        .select('quantity')
+    const userId = message.author.id;
+    // Check registration (user must exist in profiles table to earn points)
+    const { data: profileData, error: profError } = await supabase
+        .from('profiles')
+        .select('point')
         .eq('user_id', userId)
-        .eq('item_name', value)
         .single();
+    if (profError || !profileData) {
+        // User not registered or DB error; do nothing (could prompt to register if desired)
+        return;
+    }
 
-      if (inventory) {
-        await supabase.from('item_inventory')
-          .update({ quantity: inventory.quantity + 1 })
-          .eq('user_id', userId)
-          .eq('item_name', value);
-      } else {
-        await supabase.from('item_inventory')
-          .insert({ user_id: userId, item_name: value, quantity: 1 });
-      }
+    // Enforce cooldown: only award points if enough time passed since last award
+    const now = Date.now();
+    if (lastMessageTime[userId] && now - lastMessageTime[userId] < POINT_COOLDOWN) {
+        console.log(`Cooldown: message from ${message.author.tag} not eligible for points.`);
+        return;
+    }
 
-      await supabase.from('points')
-        .update({ point: userData.point - price })
+    // Determine payout based on user's role
+    const member = message.member;
+    let payout = defaultPayout;
+    // Loop through configured roles and use the highest payout among roles the user has
+    for (const [roleKey, setting] of Object.entries(roleSettings)) {
+        // roleKey can be role name or ID depending on configuration
+        const roleObj = member.roles.cache.find(r => r.name === roleKey || r.id === roleKey);
+        if (roleObj) {
+            if (setting.payout > payout) {
+                payout = setting.payout;
+            }
+        }
+    }
+
+    // Update user's points in database
+    const newPoints = profileData.point + payout;
+    const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ point: newPoints })
         .eq('user_id', userId);
-
-      await supabase.from('item_logs').insert({
-        user_id: userId,
-        item_name: value,
-        result: 'purchased',
-        used_at: now.toISOString()
-      });
-
-      return interaction.editReply({ content: `🛒 \`${value}\` を ${price}p で購入しました。` });
+    if (updateError) {
+        console.error("Failed to update points for user:", userId, updateError);
+        return;
     }
-    if (type === 'role') {
-      const roleInfo = roleSettings[value];
-      if (!roleInfo || roleInfo.price === 0 || ['GRAND DUKE', 'KING', 'EMPEROR'].includes(value)) {
-        return interaction.editReply({ content: '❌ このロールは購入できません。' });
-      }
-
-      const member = await interaction.guild.members.fetch(userId);
-      const roles = member.roles.cache.map(r => r.name.toUpperCase());
-
-      const higher = Object.entries(roleSettings)
-        .some(([r, s]) => s.price > roleInfo.price && roles.includes(r));
-      const lower = Object.entries(roleSettings)
-        .some(([r, s]) => s.price < roleInfo.price && roles.includes(r));
-
-      if (higher) return interaction.editReply({ content: '❌ 上位ロールを既に所持しています。' });
-      if (!lower) return interaction.editReply({ content: '❌ 前提ロールを所持していません。' });
-      if (userData.point < roleInfo.price) return interaction.editReply({ content: '❌ ポイントが不足しています。' });
-
-      const newRole = interaction.guild.roles.cache.find(r => r.name === value);
-      if (!newRole) return interaction.editReply({ content: '❌ ロールが見つかりません。' });
-
-      await member.roles.add(newRole);
-      const nickname = `【${value}】${member.user.username}`;
-      await member.setNickname(nickname).catch(() => {});
-
-      await supabase.from('points')
-        .update({ point: userData.point - roleInfo.price })
-        .eq('user_id', userId);
-
-      return interaction.editReply({ content: `✅ \`${value}\` を購入し、ロールを付与しました！` });
-    }
-
-    return interaction.editReply({ content: '❌ 無効な形式です（item:xxx / role:xxx）' });
-  }
-  if (interaction.commandName === 'use') {
-  await interaction.deferReply({ ephemeral: false });
-
-  const itemId = interaction.options.getString('item');
-  const targetUser = interaction.options.getUser('user');
-  const now = new Date();
-
-  const { data: userData } = await supabase.from('points').select('*').eq('user_id', userId).single();
-  if (!userData) return interaction.editReply({ content: '未登録です。' });
-
-  // 🔍 安全な在庫チェック（.single()を使わない）
-  const { data: inventoryList, error: inventoryError } = await supabase
-    .from('item_inventory')
-    .select('quantity')
-    .eq('user_id', userId)
-    .eq('item_name', itemId)
-    .limit(1);
-
-  if (inventoryError) {
-    console.error('Supabaseエラー（item_inventory取得）:', inventoryError);
-    return interaction.editReply({ content: '⚠️ データベースエラーが発生しました。' });
-  }
-
-  const quantity = inventoryList?.[0]?.quantity ?? 0;
-
-  if (quantity < 1) {
-    console.warn(`アイテム未所持: user=${userId}, item=${itemId}, quantity=${quantity}`);
-    return interaction.editReply({ content: '❌ 所持していないアイテムです。' });
-  }
-
-  // ✅ 在庫を1減らす
-  await supabase.from('item_inventory')
-    .update({ quantity: quantity - 1 })
-    .eq('user_id', userId)
-    .eq('item_name', itemId);
-
-  // 🛡️ シールド
-  if (itemId === 'shield') {
-    const until = new Date(now.getTime() + 86400000).toISOString();
-    await supabase.from('points').update({ shield_until: until }).eq('user_id', userId);
-    await supabase.from('item_logs').insert({
-      user_id: userId,
-      item_name: itemId,
-      result: 'success',
-      used_at: now.toISOString()
-    });
-    return interaction.editReply({ content: '🛡️ シールドを使用しました。' });
-  }
-
-  // 🔍 スコープ（相手のシールド確認）
-  if (itemId === 'scope') {
-    if (!targetUser) return interaction.editReply({ content: '❌ 対象ユーザーを指定してください。' });
-
-    const { data: targetData } = await supabase.from('points').select('shield_until').eq('user_id', targetUser.id).single();
-    const shielded = targetData?.shield_until && new Date(targetData.shield_until) > now;
-
-    await supabase.from('item_logs').insert({
-      user_id: userId,
-      item_name: itemId,
-      target_id: targetUser.id,
-      result: shielded ? 'shielded' : 'unshielded',
-      used_at: now.toISOString()
-    });
-
-    return interaction.editReply({
-      content: shielded
-        ? `${targetUser.username} は現在🛡️シールド中です。`
-        : `${targetUser.username} はシールド未使用です。`
-    });
-  }
-
-  // 🎯 ターゲットアイテム（名前変更・タイムアウト）
-  const needsTarget = ['rename_target_s', 'rename_target_a', 'rename_target_b', 'rename_target_c', 'timeout_s'];
-  if (needsTarget.includes(itemId) && !targetUser) {
-    return interaction.editReply({ content: '❌ 対象ユーザーを指定してください。' });
-  }
-
-  const rolePriority = ['SLAVE', 'SERF', 'FREEMAN', 'LOW NOBLE', 'HIGH NOBLE', 'GRAND DUKE', 'KING', 'EMPEROR'];
-  const getRank = m => m.roles.cache.map(r => rolePriority.indexOf(r.name)).filter(i => i >= 0).reduce((a, b) => Math.max(a, b), -1);
-
-  const member = await interaction.guild.members.fetch(userId);
-  const targetMember = targetUser && await interaction.guild.members.fetch(targetUser.id);
-
-  const { data: targetPoints } = targetUser
-    ? await supabase.from('points').select('shield_until').eq('user_id', targetUser.id).single()
-    : { data: null };
-
-  if (targetPoints?.shield_until && new Date(targetPoints.shield_until) > now) {
-    return interaction.editReply({ content: '🛡️ 相手は現在シールド中です。' });
-  }
-
-  let success = true;
-  if (targetUser && getRank(targetMember) > getRank(member)) {
-    success = Math.random() < 0.5;
-  }
-
-  await supabase.from('item_logs').insert({
-    user_id: userId,
-    item_name: itemId,
-    target_id: targetUser?.id || null,
-    result: success ? 'success' : 'fail',
-    used_at: now.toISOString()
-  });
-
-  if (!success) {
-    return interaction.editReply({ content: '❌ アイテム使用に失敗しました（成功率50%）' });
-  }
-
-  // 📝 名前変更（ターゲット）
-  if (itemId.startsWith('rename_target_')) {
-    const lockMin = { rename_target_s: 60, rename_target_a: 30, rename_target_b: 20, rename_target_c: 10 }[itemId];
-    const lockUntil = new Date(now.getTime() + lockMin * 60000).toISOString();
-    await supabase.from('points').update({ name_locked_: lockUntil }).eq('user_id', targetUser.id);
-
-    return interaction.showModal(
-      new ModalBuilder()
-        .setCustomId(`rename_target_modal-${targetUser.id}`)
-        .setTitle('相手の名前変更')
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('nickname')
-              .setLabel('新しいニックネーム')
-              .setStyle(TextInputStyle.Short)
-              .setMaxLength(20)
-              .setRequired(true)
-          )
-        )
-    );
-  }
-
-  // ⏱️ タイムアウト
-  if (itemId === 'timeout_s') {
-    await targetMember.timeout(5 * 60 * 1000, 'アイテム使用によるタイムアウト');
-    return interaction.editReply({ content: `⏱️ ${targetUser.username} を5分間タイムアウトしました。` });
-  }
-
-  // 🧍 名前変更（自分）
-  if (itemId === 'rename_self') {
-    return interaction.showModal(
-      new ModalBuilder()
-        .setCustomId('rename_self_modal')
-        .setTitle('自分の名前変更')
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('nickname')
-              .setLabel('新しいニックネーム')
-              .setStyle(TextInputStyle.Short)
-              .setMaxLength(20)
-              .setRequired(true)
-          )
-        )
-    );
-  }
-}
-
+    lastMessageTime[userId] = now;  // update cooldown timestamp
 });
 
-client.on('interactionCreate', async interaction => {
-  if (interaction.isModalSubmit()) {
-    const userId = interaction.user.id;
-    const now = new Date();
+// Interaction create event: handle slash commands and modal submissions
+client.on('interactionCreate', async (interaction) => {
+    try {
+        // Handle slash commands
+        if (interaction.isChatInputCommand()) {
+            const { commandName } = interaction;
+            if (commandName === 'register') {
+                // Register a new user in the profiles table
+                await interaction.deferReply({ ephemeral: true });
+                const userId = interaction.user.id;
+                // Check if already registered
+                const { data: existingProfile, error: selError } = await supabase
+                    .from('profiles')
+                    .select('user_id')
+                    .eq('user_id', userId)
+                    .single();
+                if (existingProfile) {
+                    await interaction.editReply("あなたは既に登録済みです。");
+                } else {
+                    // Insert a new profile row with default values
+                    const { error: insError } = await supabase.from('profiles').insert({ user_id: userId });
+                    if (insError) {
+                        console.error("Register insert error:", insError);
+                        await interaction.editReply("ユーザー登録中にエラーが発生しました。");
+                    } else {
+                        await interaction.editReply("ユーザー登録が完了しました。");
+                    }
+                }
+            }
+            else if (commandName === 'profile') {
+                await interaction.deferReply({ ephemeral: true });
+                // Determine whose profile to show (self or target user)
+                const targetUser = interaction.options.getUser('user') || interaction.user;
+                const userId = targetUser.id;
+                // Fetch profile from DB
+                const { data: profile, error: profErr } = await supabase
+                    .from('profiles')
+                    .select('*')
+                    .eq('user_id', userId)
+                    .single();
+                if (profErr || !profile) {
+                    await interaction.editReply("ユーザーが登録されていません。");
+                } else {
+                    // Prepare profile info
+                    let response = "";
+                    if (targetUser.id === interaction.user.id) {
+                        response += "🔹 **あなたのプロフィール:**\n";
+                    } else {
+                        response += `🔹 **${targetUser.username}さんのプロフィール:**\n`;
+                    }
+                    response += `**ポイント:** ${profile.point} ポイント\n`;
+                    response += `**借金:** ${profile.debt} ポイント\n`;
+                    // Shield status
+                    const now = new Date();
+                    if (profile.shield_until && new Date(profile.shield_until) > now) {
+                        const shieldTime = new Date(profile.shield_until).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+                        response += `**シールド:** 有効 (～ ${shieldTime} まで)\n`;
+                    } else {
+                        response += `**シールド:** なし\n`;
+                    }
+                    // Name lock status
+                    if (profile.name_locked_until && new Date(profile.name_locked_until) > now) {
+                        const lockTime = new Date(profile.name_locked_until).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+                        response += `**名前ロック:** 有効 (～ ${lockTime} まで)\n`;
+                    } else {
+                        response += `**名前ロック:** なし\n`;
+                    }
+                    // Debt due date
+                    if (profile.debt > 0 && profile.due) {
+                        const dueDate = new Date(profile.due).toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo' });
+                        response += `**支払期限:** ${dueDate}\n`;
+                    } else {
+                        response += `**支払期限:** なし\n`;
+                    }
+                    // Inventory items
+                    const { data: invItems, error: invErr } = await supabase
+                        .from('item_inventory')
+                        .select('item_name, quantity')
+                        .eq('user_id', userId);
+                    if (!invErr && invItems && invItems.length > 0) {
+                        const itemList = invItems.filter(it => it.quantity > 0).map(it => {
+                            const itemLabel = items[it.item_name]?.name || it.item_name;
+                            return `${itemLabel} x${it.quantity}`;
+                        });
+                        if (itemList.length > 0) {
+                            response += `**所持アイテム:** ${itemList.join('， ')}\n`;
+                        } else {
+                            response += `**所持アイテム:** なし\n`;
+                        }
+                    } else {
+                        response += `**所持アイテム:** なし\n`;
+                    }
+                    // 最近使ったアイテム (過去5件)
+                    const { data: recentLogs, error: logErr } = await supabase
+                        .from('item_logs')
+                        .select('item_name, used_at')
+                        .eq('user_id', userId)
+                        .order('used_at', { ascending: false })
+                        .limit(5);
+                    if (!logErr && recentLogs && recentLogs.length > 0) {
+                        const recentItemList = recentLogs.map(log => items[log.item_name]?.name || log.item_name);
+                        response += `**最近使用アイテム:** ${recentItemList.join('， ')}\n`;
+                    } else {
+                        response += `**最近使用アイテム:** なし\n`;
+                    }
+                    await interaction.editReply(response);
+                }
+            }
+            else if (commandName === 'debt') {
+                await interaction.deferReply({ ephemeral: true });
+                const userId = interaction.user.id;
+                const { data: profile, error: profErr } = await supabase
+                    .from('profiles')
+                    .select('debt, due')
+                    .eq('user_id', userId)
+                    .single();
+                if (profErr || !profile) {
+                    await interaction.editReply("ユーザーが登録されていません。");
+                } else {
+                    if (profile.debt <= 0) {
+                        await interaction.editReply("現在、借金はありません。");
+                    } else {
+                        let msg = `あなたの借金は **${profile.debt}** ポイントです。\n`;
+                        if (profile.due) {
+                            const dueDate = new Date(profile.due).toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo' });
+                            msg += `返済期限: ${dueDate}までに自動返済が行われます。`;
+                        } else {
+                            msg += "返済期限: なし（随時自動返済されます）";
+                        }
+                        await interaction.editReply(msg);
+                    }
+                }
+            }
+            else if (commandName === 'shop') {
+                await interaction.deferReply({ ephemeral: true });
+                // List available items with price and description
+                let shopList = "🔸 **ショップ商品一覧** 🔸\n";
+                for (const key in items) {
+                    const it = items[key];
+                    shopList += `\`${key}\` - ${it.name}: **${it.price}** ポイント (${it.description})\n`;
+                }
+                shopList += "購入するには `/buy <item>` コマンドを使用してください。";
+                await interaction.editReply(shopList);
+            }
+            else if (commandName === 'buy') {
+                await interaction.deferReply({ ephemeral: true });
+                const userId = interaction.user.id;
+                const itemInput = interaction.options.getString('item');
+                if (!itemInput) {
+                    await interaction.editReply("購入するアイテム名を指定してください。");
+                    return;
+                }
+                // Normalize item name (trim, toLowerCase, remove leading "item:" if present)
+                let itemName = itemInput.trim().toLowerCase();
+                if (itemName.startsWith("item:")) {
+                    itemName = itemName.slice(5).trim().toLowerCase();
+                }
+                if (!items[itemName]) {
+                    await interaction.editReply("指定されたアイテムは存在しません。");
+                    return;
+                }
+                const price = items[itemName].price;
+                // Fetch user profile for current points and debt
+                const { data: profile, error: profErr } = await supabase
+                    .from('profiles')
+                    .select('point, debt, due')
+                    .eq('user_id', userId)
+                    .single();
+                if (profErr || !profile) {
+                    await interaction.editReply("ユーザーが登録されていません。");
+                    return;
+                }
+                let currentPoints = profile.point;
+                let currentDebt = profile.debt;
+                let dueDate = profile.due;
+                // Determine payment and update debt if needed
+                let newPoint = 0;
+                let newDebt = currentDebt;
+                if (currentPoints >= price) {
+                    // User has enough points, just deduct
+                    newPoint = currentPoints - price;
+                } else {
+                    // Not enough points: use all points and take the rest as debt
+                    const deficit = price - currentPoints;
+                    newPoint = 0;
+                    newDebt = currentDebt + deficit;
+                    // Set due date if going into debt for the first time
+                    if (currentDebt === 0) {
+                        const tomorrow = new Date();
+                        tomorrow.setDate(tomorrow.getDate() + 1);
+                        dueDate = tomorrow.toISOString().split('T')[0];  // store as "YYYY-MM-DD"
+                    }
+                }
+                // Update profiles table with new point/debt values
+                const updates = { point: newPoint, debt: newDebt };
+                if (newDebt !== currentDebt) {
+                    updates.due = dueDate;
+                }
+                const { error: upErr } = await supabase.from('profiles').update(updates).eq('user_id', userId);
+                if (upErr) {
+                    console.error("Error updating profile on buy:", upErr);
+                    await interaction.editReply("購入処理中にエラーが発生しました。");
+                    return;
+                }
+                // Update item inventory: increment item count
+                // Check if user already has this item in inventory
+                const { data: invRow, error: invErr } = await supabase
+                    .from('item_inventory')
+                    .select('quantity')
+                    .eq('user_id', userId)
+                    .eq('item_name', itemName)
+                    .single();
+                if (invErr && invErr.code !== 'PGRST116') {  // PGRST116 might indicate no rows (not a critical error)
+                    console.error("Inventory fetch error on buy:", invErr);
+                }
+                if (!invErr && invRow) {
+                    // Row exists, update quantity
+                    const newQty = invRow.quantity + 1;
+                    await supabase.from('item_inventory')
+                        .update({ quantity: newQty })
+                        .eq('user_id', userId)
+                        .eq('item_name', itemName);
+                } else {
+                    // No existing row, insert new
+                    await supabase.from('item_inventory')
+                        .insert({ user_id: userId, item_name: itemName, quantity: 1 });
+                }
+                // Reply with success message
+                let replyMsg = `「${items[itemName].name}」を **${items[itemName].price}** ポイントで購入しました。`;
+                if (currentPoints < price) {
+                    replyMsg += `\nポイントが不足したため **${(items[itemName].price - currentPoints)}** ポイントが借金に追加されました。`;
+                }
+                replyMsg += `\n現在のポイント: ${newPoint} ポイント、借金: ${newDebt} ポイント。`;
+                await interaction.editReply(replyMsg);
+            }
+            else if (commandName === 'use') {
+                // Using an item from inventory
+                const itemInput = interaction.options.getString('item');
+                let targetUser = interaction.options.getUser('target');
+                if (!itemInput) {
+                    await interaction.reply({ content: "使用するアイテム名を指定してください。", ephemeral: true });
+                    return;
+                }
+                // Normalize item name
+                let itemName = itemInput.trim().toLowerCase();
+                if (itemName.startsWith("item:")) {
+                    itemName = itemName.slice(5).trim().toLowerCase();
+                }
+                if (!items[itemName]) {
+                    await interaction.reply({ content: "指定されたアイテムは存在しません。", ephemeral: true });
+                    return;
+                }
+                // Check inventory for the item
+                const userId = interaction.user.id;
+                const { data: invRow, error: invErr } = await supabase
+                    .from('item_inventory')
+                    .select('quantity')
+                    .eq('user_id', userId)
+                    .eq('item_name', itemName)
+                    .single();
+                if (invErr || !invRow || invRow.quantity < 1) {
+                    await interaction.reply({ content: "そのアイテムは所持していません。", ephemeral: true });
+                    return;
+                }
 
-    if (interaction.customId === 'rename_self_modal') {
-      const newName = interaction.fields.getTextInputValue('nickname');
-      const member = await interaction.guild.members.fetch(userId);
-      await member.setNickname(newName);
-      await supabase.from('item_logs').insert({
-        user_id: userId,
-        item_name: 'rename_self',
-        target_id: userId,
-        result: 'success',
-        used_at: now.toISOString()
-      });
-      return interaction.reply({ content: `✅ 自分のニックネームを「${newName}」に変更しました。`, ephemeral: false });
+                // Handle items that require or don't require a target
+                if ((itemName === 'rename_target' || itemName === 'timeout') && !targetUser) {
+                    await interaction.reply({ content: "対象ユーザーを指定してください。", ephemeral: true });
+                    return;
+                }
+                if (itemName !== 'rename_target' && itemName !== 'timeout') {
+                    // If target provided but item doesn't use it, ignore the target
+                    targetUser = null;
+                }
+
+                // Special handling for name change items (open modal for new name input)
+                if (itemName === 'rename_self' || itemName === 'rename_target') {
+                    // Check if target is protected (for rename_target) or user is locked (for rename_self)
+                    if (itemName === 'rename_self') {
+                        // If the user has locked their own name
+                        const { data: selfProfile } = await supabase
+                            .from('profiles')
+                            .select('name_locked_until')
+                            .eq('user_id', userId)
+                            .single();
+                        if (selfProfile && selfProfile.name_locked_until && new Date(selfProfile.name_locked_until) > new Date()) {
+                            await interaction.reply({ content: "現在、自分の名前はロックされています。解除されるまで変更できません。", ephemeral: true });
+                            return;
+                        }
+                    } else if (itemName === 'rename_target') {
+                        // If target is the user themselves, that's essentially rename_self (but we'll allow it)
+                        if (targetUser && targetUser.id === userId) {
+                            // Renaming self using rename_target item (not typical, but handle as self)
+                        }
+                        // Check target's profile for shield or name lock
+                        const { data: targetProfile } = await supabase
+                            .from('profiles')
+                            .select('shield_until, name_locked_until')
+                            .eq('user_id', targetUser.id)
+                            .single();
+                        if (!targetProfile) {
+                            await interaction.reply({ content: "対象ユーザーはゲームに登録されていません。", ephemeral: true });
+                            return;
+                        }
+                        const now = new Date();
+                        if (targetProfile.shield_until && new Date(targetProfile.shield_until) > now) {
+                            await interaction.reply({ content: "対象ユーザーは現在シールドで守られています。", ephemeral: true });
+                            return;
+                        }
+                        if (targetProfile.name_locked_until && new Date(targetProfile.name_locked_until) > now) {
+                            await interaction.reply({ content: "対象ユーザーの名前はロックされています。変更できません。", ephemeral: true });
+                            return;
+                        }
+                    }
+                    // Show modal for entering the new nickname
+                    const modalId = itemName === 'rename_self' 
+                        ? "rename_self_modal" 
+                        : `rename_target_${targetUser.id}`;
+                    const modalTitle = itemName === 'rename_self' ? "ニックネームの変更" : `ニックネーム変更: ${targetUser.username}`;
+                    const modal = new ModalBuilder()
+                        .setCustomId(modalId)
+                        .setTitle(modalTitle);
+                    const input = new TextInputBuilder()
+                        .setCustomId('newName')
+                        .setLabel('新しいニックネーム')
+                        .setStyle(TextInputStyle.Short)
+                        .setMaxLength(32)
+                        .setRequired(true);
+                    modal.addComponents(new ActionRowBuilder().addComponents(input));
+                    await interaction.showModal(modal);
+                    return; // Do not send a reply yet; modal submission will be handled separately
+                }
+
+                // For other items (shield, scope, timeout, name_lock), we proceed with immediate effect
+                await interaction.deferReply({ ephemeral: true });
+                const userProfileRes = await supabase.from('profiles').select('*').eq('user_id', userId).single();
+                const userProfile = userProfileRes.data;
+                // If any DB error or missing profile (shouldn't happen if they got inventory)
+                if (!userProfile) {
+                    await interaction.editReply("ユーザープロファイルの取得中にエラーが発生しました。");
+                    return;
+                }
+                let resultMessage = "";
+                let actionSuccess = false;
+                // Handle each item effect
+                if (itemName === 'shield') {
+                    // Activate shield for the user
+                    const now = Date.now();
+                    const currentShieldUntil = userProfile.shield_until ? new Date(userProfile.shield_until).getTime() : 0;
+                    const newShieldUntil = (currentShieldUntil > now ? currentShieldUntil : now) + SHIELD_DURATION;
+                    const { error: updErr } = await supabase.from('profiles')
+                        .update({ shield_until: new Date(newShieldUntil).toISOString() })
+                        .eq('user_id', userId);
+                    if (updErr) {
+                        console.error("Error updating shield:", updErr);
+                        resultMessage = "シールドの使用中にエラーが発生しました。";
+                    } else {
+                        const untilStr = new Date(newShieldUntil).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+                        resultMessage = `シールドを使用しました。（${untilStr} まで有効）`;
+                        actionSuccess = true;
+                    }
+                }
+                else if (itemName === 'scope') {
+                    // Activate scope buff for the user
+                    if (scopeUsers.has(userId)) {
+                        resultMessage = "既にスコープを使用中です。次の攻撃が終わるまで新たに使用できません。";
+                        actionSuccess = false;
+                    } else {
+                        scopeUsers.add(userId);
+                        resultMessage = "スコープを使用しました。次のターゲットへの攻撃は必ず成功します。";
+                        actionSuccess = true;
+                    }
+                }
+                else if (itemName === 'name_lock') {
+                    // Activate name lock for the user (protect their name from change)
+                    const now = Date.now();
+                    const currentLockUntil = userProfile.name_locked_until ? new Date(userProfile.name_locked_until).getTime() : 0;
+                    const newLockUntil = (currentLockUntil > now ? currentLockUntil : now) + NAME_LOCK_DURATION;
+                    const { error: updErr } = await supabase.from('profiles')
+                        .update({ name_locked_until: new Date(newLockUntil).toISOString() })
+                        .eq('user_id', userId);
+                    if (updErr) {
+                        console.error("Error updating name lock:", updErr);
+                        resultMessage = "名前ロックの使用中にエラーが発生しました。";
+                    } else {
+                        const untilStr = new Date(newLockUntil).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+                        resultMessage = `名前ロックを使用しました。（${untilStr} まで有効）`;
+                        actionSuccess = true;
+                    }
+                }
+                else if (itemName === 'timeout') {
+                    // Use timeout on target user
+                    const targetMember = targetUser ? await interaction.guild.members.fetch(targetUser.id) : null;
+                    if (!targetMember) {
+                        resultMessage = "指定したユーザーは見つかりません。";
+                        actionSuccess = false;
+                    } else {
+                        // Check if target has shield active
+                        const { data: targetProfile } = await supabase
+                            .from('profiles')
+                            .select('shield_until')
+                            .eq('user_id', targetUser.id)
+                            .single();
+                        const now = new Date();
+                        if (targetProfile && targetProfile.shield_until && new Date(targetProfile.shield_until) > now) {
+                            resultMessage = "対象ユーザーはシールドで守られており、効果がありませんでした。";
+                            actionSuccess = false;
+                        } else {
+                            // Determine success chance
+                            let success = true;
+                            if (targetUser.id !== userId) {
+                                // Determine ranks of user and target
+                                const memberRoles = interaction.member.roles.cache;
+                                const targetRoles = targetMember.roles.cache;
+                                let userRankValue = 0;
+                                let targetRankValue = 0;
+                                for (const [roleKey, setting] of Object.entries(roleSettings)) {
+                                    if (memberRoles.find(r => r.name === roleKey || r.id === roleKey)) {
+                                        if (setting.payout > userRankValue) userRankValue = setting.payout;
+                                    }
+                                    if (targetRoles.find(r => r.name === roleKey || r.id === roleKey)) {
+                                        if (setting.payout > targetRankValue) targetRankValue = setting.payout;
+                                    }
+                                }
+                                if (targetRankValue > userRankValue) {
+                                    // Target has higher role
+                                    if (scopeUsers.has(userId)) {
+                                        success = true;
+                                    } else {
+                                        success = (Math.random() < 0.5);
+                                    }
+                                }
+                                // Remove scope buff after an offensive attempt
+                                if (scopeUsers.has(userId)) {
+                                    scopeUsers.delete(userId);
+                                }
+                            }
+                            if (!success) {
+                                resultMessage = "タイムアウトの効果は失敗しました。";
+                                actionSuccess = false;
+                            } else {
+                                // Attempt to timeout the member
+                                try {
+                                    await targetMember.timeout(TIMEOUT_DURATION, `Timeout item used by ${interaction.user.username}`);
+                                    resultMessage = `${targetUser.username} さんをタイムアウトしました。`;
+                                    actionSuccess = true;
+                                } catch (err) {
+                                    console.error("Failed to timeout member:", err);
+                                    resultMessage = "指定ユーザーをタイムアウトできません。（権限不足）";
+                                    actionSuccess = false;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Deduct the item from inventory (one use)
+                const newQty = invRow.quantity - 1;
+                await supabase.from('item_inventory')
+                    .update({ quantity: newQty })
+                    .eq('user_id', userId)
+                    .eq('item_name', itemName);
+                // Log the item usage in item_logs
+                const logEntry = {
+                    user_id: userId,
+                    target_id: targetUser ? targetUser.id : null,
+                    item_name: itemName,
+                    result: actionSuccess ? "success" : "fail",
+                    used_at: new Date().toISOString()
+                };
+                await supabase.from('item_logs').insert(logEntry);
+                // Respond to the user with the result
+                await interaction.editReply(resultMessage);
+            }
+        } 
+    } catch (err) {
+        console.error("Error in interactionCreate handler:", err);
     }
-
-    if (interaction.customId.startsWith('rename_target_modal')) {
-      const targetId = interaction.customId.split('-')[1];
-      const newName = interaction.fields.getTextInputValue('nickname');
-      const member = await interaction.guild.members.fetch(targetId);
-      await member.setNickname(newName);
-      await supabase.from('item_logs').insert({
-        user_id: userId,
-        item_name: 'rename_target',
-        target_id: targetId,
-        result: 'success',
-        used_at: now.toISOString()
-      });
-      return interaction.reply({ content: `✅ 対象ユーザーのニックネームを「${newName}」に変更しました。`, ephemeral: false });
+});
+// Modal submit handling (rename_self_modal, rename_target_xxx)
+client.on('interactionCreate', async (interaction) => {
+    if (interaction.isModalSubmit()) {
+        // Get the text input value (新しいニックネーム)
+        const newName = interaction.fields.getTextInputValue('newName');
+        if (interaction.customId === 'rename_self_modal') {
+            let actionSuccess = false;
+            try {
+                // 自分自身のニックネームを変更
+                await interaction.member.setNickname(newName);
+                actionSuccess = true;
+                await interaction.reply({ content: `あなたのニックネームを「${newName}」に変更しました。`, ephemeral: true });
+            } catch (err) {
+                console.error(err);
+                await interaction.reply({ content: 'ニックネームの変更に失敗しました。', ephemeral: true });
+            }
+            // Deduct used item and log usage
+            const userId = interaction.user.id;
+            const { data: invData } = await supabase.from('item_inventory').select('quantity').eq('user_id', userId).eq('item_name', 'rename_self').single();
+            if (invData && invData.quantity > 0) {
+                await supabase.from('item_inventory').update({ quantity: invData.quantity - 1 }).eq('user_id', userId).eq('item_name', 'rename_self');
+            }
+            const logEntry = {
+                user_id: userId,
+                target_id: null,
+                item_name: 'rename_self',
+                result: actionSuccess ? 'success' : 'fail',
+                used_at: new Date().toISOString()
+            };
+            await supabase.from('item_logs').insert(logEntry);
+        } else if (interaction.customId.startsWith('rename_target_')) {
+            let actionSuccess = false;
+            const targetId = interaction.customId.replace('rename_target_', '');
+            try {
+                // 対象ユーザーのニックネームを変更
+                const targetMember = await interaction.guild.members.fetch(targetId);
+                await targetMember.setNickname(newName);
+                actionSuccess = true;
+                await interaction.reply({ content: `<@${targetId}> さんのニックネームを「${newName}」に変更しました。`, ephemeral: true });
+            } catch (err) {
+                console.error(err);
+                await interaction.reply({ content: '指定ユーザーのニックネームを変更できませんでした。', ephemeral: true });
+            }
+            // Deduct used item and log usage
+            const userId = interaction.user.id;
+            const { data: invData } = await supabase.from('item_inventory').select('quantity').eq('user_id', userId).eq('item_name', 'rename_target').single();
+            if (invData && invData.quantity > 0) {
+                await supabase.from('item_inventory').update({ quantity: invData.quantity - 1 }).eq('user_id', userId).eq('item_name', 'rename_target');
+            }
+            const logEntry = {
+                user_id: userId,
+                target_id: targetId,
+                item_name: 'rename_target',
+                result: actionSuccess ? 'success' : 'fail',
+                used_at: new Date().toISOString()
+            };
+            await supabase.from('item_logs').insert(logEntry);
+        }
     }
-  }
 });
-client.on('messageCreate', async message => {
-  if (message.author.bot) return;
 
-  const userId = message.author.id;
-  const member = await message.guild.members.fetch(userId);
-  const roles = member.roles.cache.map(r => r.name.toUpperCase());
-  const matched = roles.find(r => roleSettings[r]);
-  if (!matched) return;
-
-  const { payout, limit } = roleSettings[matched];
-  const today = new Date().toISOString().split('T')[0];
-
-  const { data: logData } = await supabase
-    .from('message_logs')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('date', today)
-    .maybeSingle();
-
-  const count = logData?.count || 0;
-  const lastTime = logData?.updated_at ? new Date(logData.updated_at).getTime() : 0;
-  if (count >= limit || Date.now() - lastTime < 60000) return;
-
-  const { data: pointData } = await supabase
-    .from('points')
-    .select('*')
-    .eq('user_id', userId)
-    .single();
-
-  const newPoint = (pointData?.point || 0) + payout;
-  if (!pointData) {
-    await supabase.from('points').insert({ user_id: userId, point: newPoint, debt: 0, due: null });
-  } else {
-    await supabase.from('points').update({ point: newPoint }).eq('user_id', userId);
-  }
-
-  if (!logData) {
-    await supabase.from('message_logs').insert({ user_id: userId, date: today, count: 1 });
-  } else {
-    await supabase.from('message_logs').update({ count: count + 1 }).eq('user_id', userId).eq('date', today);
-  }
-});
-// 自動返済処理（Renderやcronから呼び出す）
+// HTTP server setup (/repay-check endpoint for automatic debt repayment)
 const http = require('http');
 const PORT = process.env.PORT || 3000;
+const server = http.createServer(async (req, res) => {
+    if (req.method === 'GET' && req.url === '/repay-check') {
+        console.log('/repay-check endpoint called');
+        try {
+            // Find all profiles with debt whose due date has passed or is today
+            const today = new Date().toISOString().split('T')[0];
+            const { data: dueProfiles, error: fetchErr } = await supabase
+                .from('profiles')
+                .select('user_id, point, debt, due')
+                .gt('debt', 0)
+                .not('due', 'is', null)
+                .lte('due', today);
+            if (fetchErr) throw fetchErr;
 
-http.createServer(async (req, res) => {
-  if (req.url === '/repay-check') {
-    const today = new Date().toISOString().split('T')[0];
-    const { data: users } = await supabase.from('points').select('*').lt('due', today).neq('debt', 0);
-    if (users) {
-      const guild = client.guilds.cache.get(process.env.GUILD_ID);
-      for (const user of users) {
-        const member = await guild.members.fetch(user.user_id).catch(() => null);
-        if (!member) continue;
-        const total = Math.ceil(user.debt * 1.1);
-        let point = user.point;
-
-        if (point >= total) {
-          await supabase.from('points').update({ point: point - total, debt: 0, due: null }).eq('user_id', user.user_id);
-        } else {
-          const roles = member.roles.cache.map(r => r.name.toUpperCase());
-          const owned = Object.entries(roleSettings).filter(([r]) => roles.includes(r)).sort((a, b) => b[1].price - a[1].price);
-          let recovered = 0;
-
-          for (const [roleName, info] of owned) {
-            if (info.price === 0) continue;
-            const role = member.roles.cache.find(r => r.name.toUpperCase() === roleName);
-            if (role) await member.roles.remove(role);
-            recovered += Math.floor(info.price / 2);
-            const lower = Object.entries(roleSettings).filter(([r, s]) => s.price < info.price).sort((a, b) => b[1].price - a[1].price)[0];
-            if (lower) {
-              const newRole = guild.roles.cache.find(r => r.name === lower[0]);
-              if (newRole) await member.roles.add(newRole);
-              await member.setNickname(`【${lower[0]}】${member.user.username}`).catch(() => {});
+            // Process each such profile for repayment
+            for (const profile of dueProfiles) {
+                const userId = profile.user_id;
+                const currentPoints = profile.point;
+                const debt = profile.debt;
+                if (!debt || debt <= 0) continue;
+                const newPoints = currentPoints - debt;
+                // Update profile: subtract debt from points, clear debt and due
+                const updates = { point: newPoints, debt: 0, due: null };
+                const { error: updErr } = await supabase.from('profiles').update(updates).eq('user_id', userId);
+                if (updErr) {
+                    console.error(`Failed to update profile for user ${userId}:`, updErr);
+                    continue;
+                }
+                console.log(`Auto-repaid ${debt} points for user ${userId}. New point balance: ${newPoints}.`);
             }
-            break;
-          }
 
-          if (point + recovered >= total) {
-            await supabase.from('points').update({ point: point + recovered - total, debt: 0, due: null }).eq('user_id', user.user_id);
-          } else {
-            const slave = guild.roles.cache.find(r => r.name === 'SLAVE');
-            if (slave) await member.roles.add(slave);
-            await member.setNickname(`【SLAVE】${member.user.username}`).catch(() => {});
-            await supabase.from('points').update({ point: 0, debt: 0, due: null }).eq('user_id', user.user_id);
-          }
+            // Send success response
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('OK');
+        } catch (err) {
+            console.error('Error in /repay-check handler:', err);
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Error processing repayments');
         }
-      }
+    } else {
+        // Response for undefined routes
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
     }
-
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Repay check completed.');
-  } else {
-    res.writeHead(200);
-    res.end('Bot is alive.');
-  }
-}).listen(PORT, () => {
-  console.log(`HTTP server running on port ${PORT}`);
+});
+server.listen(PORT, () => {
+    console.log(`HTTP Server is listening on port ${PORT}`);
 });
 
+// Bot startup and login
 client.once('ready', () => {
-  console.log('✅ Bot Ready');
+    console.log(`Bot is online! Logged in as ${client.user.tag}`);
 });
+client.login(process.env.DISCORD_TOKEN);
