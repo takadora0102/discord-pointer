@@ -404,7 +404,13 @@ client.on('messageCreate',async msg=>{
   });
 
   /* ログ (任意) */
-  await sb.from('message_awards').insert({user_id:msg.author.id,message_id:msg.id,payout}).catch(()=>{});
+  try {
+    await sb.from('message_awards').insert({
+      user_id: msg.author.id,
+      message_id: msg.id,
+      payout
+    });
+  } catch (_) { /* ignore logging errors */ }
 });
 
 /* ───────── Express keep-alive ───────── */
