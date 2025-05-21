@@ -1,15 +1,16 @@
 /**********************************************************************
  * Discord Point-Bot + Unit Warfare – FULL SOURCE  (2025-05-21)
- *  ◉ ロール販売追加（SHOP/BY）
- *  ◉ ユニット選択用オートコンプリート実装
+ *  ◉ ロール販売（SHOP/BUTON）追加
+ *  ◉ アイテム在庫管理を upsert 化 (addInv 修正)
+ *  ◉ ユニット選択にオートコンプリート
  *  ◉ PROFILE に冒険中・疲労中タグ表示
  *  ◉ deferReply→editReply 二重返信ガード
  *  ◉ Global unhandledRejection ハンドラ
  *********************************************************************/
 
 import 'dotenv/config';
-import express       from 'express';
-import cron          from 'node-cron';
+import express from 'express';
+import cron from 'node-cron';
 import {
   Client, GatewayIntentBits, Partials,
   REST, Routes, SlashCommandBuilder,
@@ -18,12 +19,12 @@ import {
 } from 'discord.js';
 import { createClient } from '@supabase/supabase-js';
 
-/* ───────── Global Error Handler ───────── */
+// ───────── Global Error Handler ─────────
 process.on('unhandledRejection', reason => {
   console.error('Unhandled Rejection:', reason);
 });
 
-/* ───────── Supabase & Discord Client ───────── */
+// ───────── Supabase & Discord Client ─────────
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const client = new Client({
   intents: [
@@ -35,14 +36,14 @@ const client = new Client({
 });
 const ROLE_PREFIX = r => `【${r}】`;
 
-/* ───────── 購入可能ロール ───────── */
+// ───────── 購入可能ロール ─────────
 const ROLES_FOR_SALE = [
   { name: 'FREE MAN',   value: 'role_FREE MAN',  price: 10000  },
   { name: 'LOW NOBLE',  value: 'role_LOW NOBLE', price: 50000  },
   { name: 'HIGH NOBLE', value: 'role_HIGH NOBLE',price: 250000 }
 ];
 
-/* ───────── アイテム一覧 ───────── */
+// ───────── アイテム一覧 ─────────
 const ITEMS = {
   shield:          { name:'Shield',          price:300,    effect:'shield' },
   scope:           { name:'Scope',           price:100,    effect:'scope' },
@@ -56,64 +57,78 @@ const ITEMS = {
   elixir:          { name:'Elixir',          price:3000,   effect:'elixir' }
 };
 
-/* ───────── ユニットカタログ ───────── */
-const CAT = [ // type, grade, cat, hire, maint, atk, def, pph
-  ['Scout',      'C','adv',  1500,  150,   8,   6,  140],
-  ['Pioneer',    'B','adv',  7000,  600,  22,  15,  500],
-  ['Explorer',   'S','adv', 20000, 1200,  40,  25, 1000],
-  ['Raider',     'C','atk',  3000,  300,  35,  10,  100],
-  ['Skirmisher', 'B','atk', 12000,  900,  80,  22,  200],
-  ['Berserker',  'S','atk', 40000, 2000, 150,  40,  250],
-  ['Guard',      'C','def',  2500,  250,  15,  40,   70],
-  ['Sentinel',   'B','def', 10000,  700,  30, 100,  120],
-  ['Paladin',    'S','def', 35000, 1800,  60, 180,  150]
+// ───────── ユニットカタログ ─────────
+const CAT = [ // type,grade,cat,hire,maint,atk,def,pph
+  ['Scout',      'C','adv',  1500,  150,   8,   6,  140 ],
+  ['Pioneer',    'B','adv',  7000,  600,  22,  15,  500 ],
+  ['Explorer',   'S','adv', 20000, 1200,  40,  25, 1000 ],
+  ['Raider',     'C','atk',  3000,  300,  35,  10,  100 ],
+  ['Skirmisher', 'B','atk', 12000,  900,  80,  22,  200 ],
+  ['Berserker',  'S','atk', 40000, 2000, 150,  40,  250 ],
+  ['Guard',      'C','def',  2500,  250,  15,  40,   70 ],
+  ['Sentinel',   'B','def', 10000,  700,  30, 100,  120 ],
+  ['Paladin',    'S','def', 35000, 1800,  60, 180,  150 ]
 ];
 
-/* ───────── ロール別 保有上限 & 出撃枠 ───────── */
+// ───────── ロール別 保有上限 & 出撃枠 ─────────
 const LIM = {
-  'SERF':       { adv:1, atk:0, def:0, field:1 },
-  'FREE MAN':   { adv:2, atk:1, def:1, field:2 },
-  'LOW NOBLE':  { adv:3, atk:2, def:2, field:3 },
-  'HIGH NOBLE': { adv:4, atk:3, def:3, field:4 },
-  'GRAND DUKE': { adv:6, atk:4, def:4, field:5 },
-  'KING':       { adv:8, atk:6, def:6, field:6 },
-  'EMPEROR':    { adv:10,atk:8, def:8, field:7 }
+  'SERF':       { adv:1,atk:0,def:0,field:1 },
+  'FREE MAN':   { adv:2,atk:1,def:1,field:2 },
+  'LOW NOBLE':  { adv:3,atk:2,def:2,field:3 },
+  'HIGH NOBLE': { adv:4,atk:3,def:3,field:4 },
+  'GRAND DUKE': { adv:6,atk:4,def:4,field:5 },
+  'KING':       { adv:8,atk:6,def:6,field:6 },
+  'EMPEROR':    { adv:10,atk:8,def:8,field:7 }
 };
-const limitOf = member =>
-  LIM[ Object.keys(LIM).reverse()
+const limitOf = member => LIM[
+  Object.keys(LIM).reverse()
     .find(r => member.roles.cache.some(x => x.name === r)) || 'SERF'
-  ];
-const weight = i => Math.pow(0.8, i);  // 1, 0.8, 0.64 …
+];
+const weight = i => Math.pow(0.8, i); // 1,0.8,0.64…
 
-/* ───────── Supabase Helpers ───────── */
-const gP    = async id => (await sb.from('profiles').select('*').eq('user_id',id).single()).data;
+// ───────── Supabase ヘルパ ─────────
+const gP    = async id => (await sb.from('profiles').select('*').eq('user_id', id).single()).data;
 const upP   = (id, f) => sb.from('profiles').upsert({ user_id:id, ...f }, { onConflict:'user_id' });
-const owned = async id => (await sb.from('unit_owned').select('*').eq('user_id',id)).data || [];
-async function addInv(id, key, delta=1) {
-  await sb.rpc('add_inventory', { uid:id, item_name:key, delta });
+const owned = async id => (await sb.from('unit_owned').select('*').eq('user_id', id)).data || [];
+
+// ■ 在庫追加を upsert で実装
+async function addInv(id, key, delta = 1) {
+  const { data, error } = await sb
+    .from('item_inventory')
+    .upsert(
+      { user_id: id, item_name: key, quantity: delta },
+      { onConflict: ['user_id','item_name'] }
+    );
+  if (error) console.error('addInv error:', error);
+  else console.log('addInv success:', data);
 }
+
+// ■ 在庫使用チェック
 async function useInv(id, key) {
-  const rec = (await sb.from('item_inventory')
+  const rec = (await sb
+    .from('item_inventory')
     .select('quantity')
-    .eq('user_id',id)
-    .eq('item_name',key)
-    .single()).data;
+    .eq('user_id', id)
+    .eq('item_name', key)
+    .single()
+  ).data;
   if (!rec || rec.quantity < 1) return false;
-  await sb.from('item_inventory')
+  await sb
+    .from('item_inventory')
     .update({ quantity: rec.quantity - 1 })
-    .eq('user_id',id)
-    .eq('item_name',key);
+    .eq('user_id', id)
+    .eq('item_name', key);
   return true;
 }
 
-/* ───────── Slash-Command Definitions ───────── */
+// ───────── Slash コマンド定義 ─────────
 const cmds = [
   new SlashCommandBuilder().setName('register').setDescription('ユーザー登録'),
   new SlashCommandBuilder().setName('shop').setDescription('ショップ一覧'),
   new SlashCommandBuilder().setName('buy').setDescription('購入')
     .addStringOption(o => o
       .setName('key')
-      .setDescription('item or role key')
+      .setDescription('item または role のキー')
       .setRequired(true)
       .addChoices(
         ...Object.keys(ITEMS).map(k => ({ name:k, value:k })),
@@ -123,7 +138,7 @@ const cmds = [
   new SlashCommandBuilder().setName('use').setDescription('アイテム使用')
     .addStringOption(o => o
       .setName('item')
-      .setDescription('使用アイテム')
+      .setDescription('使用アイテムのキー')
       .setRequired(true)
       .addChoices(...Object.keys(ITEMS).map(k => ({ name:k, value:k })))
     )
@@ -139,16 +154,16 @@ const cmds = [
     .addSubcommand(c => c.setName('list').setDescription('所持ユニット一覧'))
     .addSubcommand(c => c
       .setName('adventure')
-      .setDescription('ユニットを冒険に出す')
+      .setDescription('冒険に出す')
       .addStringOption(o => o
         .setName('unit_id')
-        .setDescription('ユニットID')
+        .setDescription('ユニット ID')
         .setRequired(true)
         .setAutocomplete(true)
       )
       .addIntegerOption(o => o
         .setName('hours')
-        .setDescription('1-8h')
+        .setDescription('1–8h')
         .setRequired(true)
         .setMinValue(1)
         .setMaxValue(8)
@@ -156,10 +171,10 @@ const cmds = [
     )
     .addSubcommand(c => c
       .setName('attack')
-      .setDescription('ユニットで攻撃')
+      .setDescription('攻撃する')
       .addStringOption(o => o
         .setName('main')
-        .setDescription('主力ユニットID')
+        .setDescription('主力ユニット ID')
         .setRequired(true)
         .setAutocomplete(true)
       )
@@ -170,64 +185,58 @@ const cmds = [
       )
       .addStringOption(o => o
         .setName('ally1')
-        .setDescription('サブユニットID1')
+        .setDescription('サブユニット ID 1')
         .setAutocomplete(true)
       )
       .addStringOption(o => o
         .setName('ally2')
-        .setDescription('サブユニットID2')
+        .setDescription('サブユニット ID 2')
         .setAutocomplete(true)
       )
     ),
-  new SlashCommandBuilder().setName('profile').setDescription('自分のプロフィール表示')
+  new SlashCommandBuilder().setName('profile').setDescription('プロフィール表示')
 ];
 
 await new REST({ version:'10' })
   .setToken(process.env.DISCORD_TOKEN)
-  .put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body:cmds });
-/* ───────── Autocomplete for unit selections ───────── */
+  .put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: cmds });
+// ───────── Autocomplete ハンドラ ─────────
 client.on('interactionCreate', async interaction => {
   if (!interaction.isAutocomplete()) return;
+  if (interaction.commandName !== 'unit') return;
 
-  const cmd = interaction.commandName;
-  if (cmd === 'unit') {
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'adventure' || sub === 'attack') {
-      const focused = interaction.options.getFocused(true);
-      const allUnits = await owned(interaction.user.id);
-      const choices = allUnits.map(u => ({
-        name: `#${u.id} ${u.type}(${u.grade})${u.fatigue_until && new Date(u.fatigue_until)>new Date() ? ' 😴' : ''}`,
-        value: u.id.toString()
-      }));
-      const filtered = choices
-        .filter(c => c.name.toLowerCase().includes(focused.value.toLowerCase()))
-        .slice(0, 25);
-      return interaction.respond(filtered);
-    }
+  const sub = interaction.options.getSubcommand();
+  if (sub === 'adventure' || sub === 'attack') {
+    const focused = interaction.options.getFocused(true);
+    const units = await owned(interaction.user.id);
+    const choices = units.map(u => ({
+      name: `#${u.id} ${u.type}(${u.grade})${u.fatigue_until && new Date(u.fatigue_until)>new Date()?' 😴':''}`,
+      value: u.id.toString()
+    }));
+    const filtered = choices
+      .filter(c => c.name.toLowerCase().includes(focused.value.toLowerCase()))
+      .slice(0, 25);
+    return interaction.respond(filtered);
   }
 });
 
-/* ───────── Slash Command Handler ───────── */
+// ───────── Slash コマンドハンドラ ─────────
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  /* ---------- /register ---------- */
+  // /register
   if (interaction.commandName === 'register') {
     try {
       await interaction.deferReply({ ephemeral: true });
-
       const exists = await gP(interaction.user.id);
       if (exists) {
         return interaction.editReply({ content: '✅ すでに登録済みです' });
       }
-
-      // 初期登録
       await upP(interaction.user.id, { points: 1000, debt: 0 });
-      const serfRole = interaction.guild.roles.cache.find(r => r.name === 'SERF');
-      if (serfRole) await interaction.member.roles.add(serfRole).catch(()=>{});
+      const role = interaction.guild.roles.cache.find(r => r.name === 'SERF');
+      if (role) await interaction.member.roles.add(role).catch(()=>{});
       const base = interaction.member.displayName.replace(/^【.*?】/, '').slice(0,24);
       await interaction.member.setNickname(`${ROLE_PREFIX('SERF')}${base}`).catch(()=>{});
-
       return interaction.editReply({ content: '🎉 登録完了！1000p 付与' });
     } catch (err) {
       console.error('[/register] Error:', err);
@@ -240,45 +249,40 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  /* ---------- /shop ---------- */
+  // /shop
   if (interaction.commandName === 'shop') {
     const unitLines = CAT.map(([t,g,c,h])=>`**${t}** (${g}/${c}) – ${h}p`).join('\n');
     const roleLines = ROLES_FOR_SALE.map(r=>`**Role: ${r.name}** – ${r.price}p`).join('\n');
     const itemLines = Object.entries(ITEMS).map(([k,v])=>`**${k}** – ${v.price}p`).join('\n');
-
     return interaction.reply({
       embeds: [{
-        title: '🏪 SHOP',
+        title:'🏪 SHOP',
         description:
-          `__ユニット雇用__\n${unitLines}\n\n` +
-          `__ロール購入__\n${roleLines}\n\n` +
+          `__ユニット雇用__\n${unitLines}\n\n`+
+          `__ロール購入__\n${roleLines}\n\n`+
           `__アイテム__\n${itemLines}`
       }],
-      ephemeral: true
+      ephemeral:true
     });
   }
 
-  /* ---------- /buy ---------- */
+  // /buy
   if (interaction.commandName === 'buy') {
     const key = interaction.options.getString('key');
-
-    // ロール購入
     if (key.startsWith('role_')) {
-      const roleInfo = ROLES_FOR_SALE.find(r => r.value === key);
+      const roleInfo = ROLES_FOR_SALE.find(r=>r.value===key);
       const prof = await gP(interaction.user.id);
       if (prof.points < roleInfo.price) {
         return interaction.reply({ content: '❌ ポイント不足', ephemeral: true });
       }
-      const role = interaction.guild.roles.cache.find(r => r.name === roleInfo.name);
+      const role = interaction.guild.roles.cache.find(r=>r.name===roleInfo.name);
       if (!role) {
-        return interaction.reply({ content: '❌ サーバーにそのロールがありません', ephemeral: true });
+        return interaction.reply({ content: '❌ サーバーにロールがありません', ephemeral:true });
       }
       await interaction.member.roles.add(role).catch(()=>{});
       await upP(interaction.user.id, { points: prof.points - roleInfo.price });
       return interaction.reply({ content: `✅ ${roleInfo.name} ロールを取得しました`, ephemeral: true });
     }
-
-    // アイテム購入
     const item = ITEMS[key];
     if (!item) {
       return interaction.reply({ content: '❌ アイテム不存在', ephemeral: true });
@@ -291,7 +295,6 @@ client.on('interactionCreate', async interaction => {
     await upP(interaction.user.id, { points: prof.points - item.price });
     return interaction.reply({ content: `✅ ${item.name} を購入しました`, ephemeral: true });
   }
-
   /* ---------- /use ---------- */
   if (interaction.commandName === 'use') {
     const key = interaction.options.getString('item');
@@ -301,47 +304,52 @@ client.on('interactionCreate', async interaction => {
     }
     const target = interaction.options.getUser('target');
 
+    // 在庫チェック＆削減
     if (!await useInv(interaction.user.id, key)) {
       return interaction.reply({ content: '❌ 在庫がありません', ephemeral: true });
     }
 
-    // shield
+    // Shield
     if (item.effect === 'shield') {
-      await upP(interaction.user.id, { shield_until: new Date(Date.now() + 24*60*60*1000).toISOString() });
+      await upP(interaction.user.id, {
+        shield_until: new Date(Date.now() + 24*60*60*1000).toISOString()
+      });
       return interaction.reply({ content: '🛡️ 24h シールド展開', ephemeral: true });
     }
-    // scope
+
+    // Scope
     if (item.effect === 'scope') {
       if (!target) return interaction.reply({ content: '❌ ターゲット必須', ephemeral: true });
       const tp = await gP(target.id);
       const on = tp?.shield_until && new Date(tp.shield_until) > new Date();
       return interaction.reply({ content: on ? '🟢 シールド中' : '⚪ シールドなし', ephemeral: true });
     }
-    // timeout
+
+    // Timeout
     if (item.effect === 'timeout') {
       if (!target) return interaction.reply({ content: '❌ ターゲット必須', ephemeral: true });
       const mem = await interaction.guild.members.fetch(target.id);
       await mem.timeout(10*60*1000, 'Timeout Item');
       return interaction.reply({ content: '⏱ 10分タイムアウト', ephemeral: true });
     }
-    // tonic
+
+    // Tonic
     if (item.effect === 'tonic') {
       const list = await owned(interaction.user.id);
       const fatigued = list.find(u => u.fatigue_until && new Date(u.fatigue_until) > new Date());
       if (!fatigued) return interaction.reply({ content: '😌 疲労ユニットなし', ephemeral: true });
-      await sb.from('unit_owned')
-        .update({ fatigue_until: null })
-        .eq('id', fatigued.id);
+      await sb.from('unit_owned').update({ fatigue_until: null }).eq('id', fatigued.id);
       return interaction.reply({ content: `✨ ${fatigued.type} の疲労を回復`, ephemeral: true });
     }
-    // elixir
+
+    // Elixir
     if (item.effect === 'elixir') {
-      await sb.from('unit_owned')
-        .update({ fatigue_until: null })
+      await sb.from('unit_owned').update({ fatigue_until: null })
         .eq('user_id', interaction.user.id);
       return interaction.reply({ content: '✨ 全ユニットの疲労を回復', ephemeral: true });
     }
-    // rename_self
+
+    // Rename Self
     if (item.effect === 'rename_self') {
       const modal = new ModalBuilder()
         .setCustomId(`rename_self:${key}`)
@@ -358,7 +366,8 @@ client.on('interactionCreate', async interaction => {
         );
       return interaction.showModal(modal);
     }
-    // rename_target
+
+    // Rename Target
     if (item.effect === 'rename_target') {
       if (!target) return interaction.reply({ content: '❌ ターゲット必須', ephemeral: true });
       const modal = new ModalBuilder()
@@ -379,6 +388,7 @@ client.on('interactionCreate', async interaction => {
 
     return interaction.reply({ content: '❌ 未対応アイテム', ephemeral: true });
   }
+
   /* ---------- /hire ---------- */
   if (interaction.commandName === 'hire') {
     const name = interaction.options.getString('unit');
@@ -410,17 +420,16 @@ client.on('interactionCreate', async interaction => {
     const list = await owned(interaction.user.id);
     const now  = Date.now();
     const lines = await Promise.all(list.map(async u => {
-      // 冒険中チェック
       const advRow = await sb.from('unit_tasks').select('*')
         .eq('unit_id', u.id).eq('mode', 'adv')
         .gt('ends_at', new Date().toISOString())
         .single();
       const inAdv = advRow.data ? '🏃‍♂️冒険中' : '';
       const fatigue = u.fatigue_until && new Date(u.fatigue_until) > now
-        ? `😴${Math.ceil((new Date(u.fatigue_until)-now)/60000)}m` : '';
+        ? `😴${Math.ceil((new Date(u.fatigue_until) - now)/60000)}m` : '';
       return `#${u.id} ${u.type}(${u.grade}) ${inAdv} ${fatigue}`;
     }));
-    const text = lines.join('\n') || 'なし';
+    const text = lines.length ? lines.join('\n') : 'なし';
     return interaction.reply({ content: '```\n' + text + '\n```', ephemeral: true });
   }
 
@@ -458,27 +467,26 @@ client.on('interactionCreate', async interaction => {
     const mainId = parseInt(interaction.options.getString('main'));
     const ally1  = interaction.options.getString('ally1');
     const ally2  = interaction.options.getString('ally2');
-    const allyIds = [ally1, ally2].filter(Boolean).map(x => parseInt(x));
-    const member = interaction.member;
-    const field  = limitOf(member).field;
-    const picks  = [mainId, ...allyIds];
+    const picks  = [mainId]
+                    .concat([ally1, ally2].filter(Boolean).map(x => parseInt(x)));
+    const field  = limitOf(interaction.member).field;
     if (picks.length > field) {
       return interaction.editReply({ content: `❌ 出撃枠 ${field} 超過` });
     }
-    // ブロック: SERF
+    // SERFブロック
     const targetUser = interaction.options.getUser('target');
     const tMem = await interaction.guild.members.fetch(targetUser.id);
     if (tMem.roles.cache.some(r => r.name === 'SERF')) {
       return interaction.editReply({ content: '❌ SERF への攻撃は禁止です' });
     }
-    // 自分のユニット選択
+    // アタッカー取得
     const avail = (await owned(interaction.user.id))
       .filter(u => !u.fatigue_until || new Date(u.fatigue_until) < new Date());
     const lineup = avail.filter(u => picks.includes(u.id));
     if (lineup.length !== picks.length) {
       return interaction.editReply({ content: '❌ ユニットが存在しないか疲労中です' });
     }
-    // 相手防御ユニット
+    // ディフェンダー
     const defAvail = (await owned(targetUser.id))
       .filter(u => !u.fatigue_until || new Date(u.fatigue_until) < new Date())
       .sort((a,b) => b.def - a.def)
@@ -487,16 +495,16 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply({ content: '❌ 相手に防御ユニットがいません' });
     }
     // 戦闘計算
-    const sum = (arr, key) => arr.reduce((s,u,i) => s + u[key] * weight(i), 0);
-    const atk = sum(lineup,'atk'), def = sum(defAvail,'def');
-    const roll = Math.floor(Math.random()*11) - 5;
+    const sum = (arr,key) => arr.reduce((s,u,i)=>s+u[key]*weight(i),0);
+    const atk   = sum(lineup,'atk');
+    const def   = sum(defAvail,'def');
+    const roll  = Math.floor(Math.random()*11) - 5;
     const score = atk - def + roll;
-    const win = score > 0;
-    const rate = Math.min(Math.max(score/120,0.5),1.5);
-    const victim = await gP(targetUser.id);
+    const win   = score > 0;
+    const rate  = Math.min(Math.max(score/120,0.5),1.5);
+    const victim= await gP(targetUser.id);
     let steal = 0;
     if (win) steal = Math.floor(victim.points * 0.2 * rate);
-    // ポイント更新
     await upP(targetUser.id, { points: victim.points - steal });
     const me = await gP(interaction.user.id);
     await upP(interaction.user.id, { points: me.points + steal });
@@ -532,7 +540,7 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-/* ───────── ModalSubmit for rename ───────── */
+// ───────── Model Submit (rename) ─────────
 client.on('interactionCreate', async i => {
   if (!i.isModalSubmit()) return;
   const [kind, key, tgt] = i.customId.split(':');
@@ -551,7 +559,7 @@ client.on('interactionCreate', async i => {
   }
 });
 
-/* ───────── cron: adventure resolution & fatigue clear ───────── */
+// ───────── cron: 冒険解決 & 疲労解除 ─────────
 cron.schedule('*/5 * * * *', async () => {
   // 疲労解除
   await sb.from('unit_owned').update({ fatigue_until: null })
@@ -561,7 +569,7 @@ cron.schedule('*/5 * * * *', async () => {
   const { data } = await sb.from('unit_tasks').select('*')
     .eq('mode','adv').lte('ends_at', now);
   for (const t of data) {
-    const row = await sb.from('unit_owned').select('*').eq('id',t.unit_id).single();
+    const row = await sb.from('unit_owned').select('*').eq('id', t.unit_id).single();
     const u   = row.data; if (!u) continue;
     const gain = CAT.find(c=>c[0]===u.type)[7] * t.hours;
     const prof = await gP(t.user_id);
@@ -573,6 +581,6 @@ cron.schedule('*/5 * * * *', async () => {
   }
 });
 
-/* ───────── Express keep-alive & login ───────── */
-express().get('/', (_,res) => res.send('alive')).listen(process.env.PORT||3000);
+// ───────── Express keep-alive & Login ─────────
+express().get('/', (_, res) => res.send('alive')).listen(process.env.PORT||3000);
 client.login(process.env.DISCORD_TOKEN);
