@@ -281,31 +281,57 @@ client.on('interactionCreate', async interaction => {
     // ... shield / scope / timeout / tonic / elixir / rename ...
     return interaction.reply({ content:'✅ 使用完了', ephemeral:true });
   }
-  // /hire
-  if (interaction.commandName === 'hire') {
+  // ───────── /hire コマンド ─────────
+if (interaction.commandName === 'hire') {
+  try {
+    // 1) 初回応答を予約
+    await interaction.deferReply({ ephemeral: true });
+
     const name = interaction.options.getString('unit');
-    const row  = CAT.find(u=>u[0]===name);
+    const row  = CAT.find(u => u[0] === name);
     if (!row) {
-      return interaction.reply({ content:'❌ ユニットなし', ephemeral:true });
+      return interaction.editReply({ content: '❌ ユニットなし' });
     }
-    const [type,grade,catKey,cost,maint,atk,defv] = row;
+
+    const [ type, grade, catKey, cost, maint, atk, defv ] = row;
     const lim  = limitOf(interaction.member);
     const lst  = await owned(interaction.user.id);
-    if (lst.filter(u=>u.category===catKey).length >= lim[catKey]) {
-      return interaction.reply({ content:`❌ ${catKey} 枠上限`, ephemeral:true });
+
+    // 枠チェック
+    if (lst.filter(u => u.category === catKey).length >= lim[catKey]) {
+      return interaction.editReply({ content: `❌ ${catKey} 枠上限` });
     }
+
+    // ポイントチェック
     const prof = await gP(interaction.user.id);
     if (prof.points < cost) {
-      return interaction.reply({ content:'❌ ポイント不足', ephemeral:true });
+      return interaction.editReply({ content: '❌ ポイント不足' });
     }
+
+    // 雇用処理
     await sb.from('unit_owned').insert({
-      user_id:interaction.user.id,
-      type,grade,category:catKey,
-      atk,def:defv,maint_cost:maint
+      user_id: interaction.user.id,
+      type, grade, category: catKey,
+      atk, def: defv, maint_cost: maint
     });
-    await upP(interaction.user.id, { points:prof.points-cost });
-    return interaction.reply({ content:`✅ ${type} 雇用完了`, ephemeral:true });
+
+    // ポイント減算
+    await upP(interaction.user.id, { points: prof.points - cost });
+
+    // 2) 最終メッセージ
+    return interaction.editReply({ content: `✅ ${type} 雇用完了` });
+
+  } catch (err) {
+    console.error('[/hire] Error:', err);
+    // 例外時も必ず editReply で返す
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '❌ エラーが発生しました', ephemeral: true });
+    } else {
+      await interaction.editReply({ content: '❌ エラーが発生しました' });
+    }
   }
+}
+
 
   // /unit list
   if (interaction.commandName==='unit' && interaction.options.getSubcommand()==='list') {
