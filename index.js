@@ -133,49 +133,150 @@ const randDrop = grade=>{
 };
 /* ========= 4. SlashCommands ========= */
 const commands = [
-  new SlashCommandBuilder().setName('register').setDescription('ユーザー登録（1000p & SERF）'),
-  new SlashCommandBuilder().setName('shop').setDescription('ショップ一覧を表示'),
+
+  /* ---------- /register ---------- */
   new SlashCommandBuilder()
-    .setName('buy').setDescription('ロール / アイテムを購入')
-    .addStringOption(o=>o.setName('key').setDescription('購入キー').setRequired(true)
-      .addChoices(
-        ...ROLES_FOR_SALE.map(r=>({ name:`Role: ${r.name}`, value:r.value })),
-        ...Object.keys(ITEMS).map(k=>({ name:ITEMS[k].name, value:k }))
-      )),
+    .setName('register')
+    .setDescription('ユーザー登録（1000 p & SERF 付与）'),
+
+  /* ---------- /shop ---------- */
   new SlashCommandBuilder()
-    .setName('use').setDescription('アイテムを使用')
-    .addStringOption(o=>o.setName('item').setDescription('アイテムキー').setRequired(true)
-      .addChoices(...Object.keys(ITEMS).map(k=>({ name:ITEMS[k].name, value:k }))))
-    .addUserOption(o=>o.setName('target').setDescription('対象ユーザー（必要時）')),
+    .setName('shop')
+    .setDescription('ショップ一覧を表示'),
+
+  /* ---------- /buy ---------- */
   new SlashCommandBuilder()
-    .setName('hire').setDescription('ユニット雇用')
-    .addStringOption(o=>o.setName('unit').setDescription('ユニット名').setRequired(true)
-      .addChoices(...CAT.map(([t])=>({ name:t, value:t })))),
+    .setName('buy')
+    .setDescription('ロール / アイテムを購入')
+    .addStringOption(o =>
+      o.setName('key')
+       .setDescription('購入するロールまたはアイテムのキー')
+       .setRequired(true)
+       .addChoices(
+         ...ROLES_FOR_SALE.map(r => ({ name: `Role: ${r.name}`, value: r.value })),
+         ...Object.keys(ITEMS).map(k => ({ name: ITEMS[k].name, value: k }))
+       )),
+
+  /* ---------- /use ---------- */
   new SlashCommandBuilder()
-    .setName('unit').setDescription('ユニット操作')
-    .addSubcommand(c=>c.setName('list').setDescription('所持ユニット一覧'))
-    .addSubcommand(c=>c.setName('adventure').setDescription('冒険へ派遣')
-      .addStringOption (o=>o.setName('unit_id').setAutocomplete(true).setRequired(true))
-      .addIntegerOption(o=>o.setName('hours').setDescription('1–8').setMinValue(1).setMaxValue(8).setRequired(true)))
-    .addSubcommand(c=>c.setName('attack').setDescription('攻撃')
-      .addStringOption(o=>o.setName('main').setAutocomplete(true).setRequired(true))
-      .addStringOption(o=>o.setName('ally1').setAutocomplete(true))
-      .addStringOption(o=>o.setName('ally2').setAutocomplete(true))
-      .addUserOption  (o=>o.setName('target').setDescription('攻撃先').setRequired(true))),
+    .setName('use')
+    .setDescription('アイテムを使用')
+    .addStringOption(o =>
+      o.setName('item')
+       .setDescription('使用するアイテムキー')
+       .setRequired(true)
+       .addChoices(...Object.keys(ITEMS).map(k => ({ name: ITEMS[k].name, value: k }))))
+    .addUserOption(o =>
+      o.setName('target')
+       .setDescription('対象ユーザー（必要な場合のみ）')),
+
+  /* ---------- /hire ---------- */
   new SlashCommandBuilder()
-    .setName('defense').setDescription('防御編成')
-    .addSubcommand(c=>c.setName('set').setDescription('設定')
-      .addStringOption(o=>o.setName('unit1').setAutocomplete(true).setRequired(true))
-      .addStringOption(o=>o.setName('unit2').setAutocomplete(true))
-      .addStringOption(o=>o.setName('unit3').setAutocomplete(true)))
-    .addSubcommand(c=>c.setName('view').setDescription('表示')),
+    .setName('hire')
+    .setDescription('ユニットを雇用')
+    .addStringOption(o =>
+      o.setName('unit')
+       .setDescription('雇用するユニット名')
+       .setRequired(true)
+       .addChoices(...CAT.map(([t]) => ({ name: t, value: t })))),
+
+  /* ---------- /unit ---------- */
   new SlashCommandBuilder()
-    .setName('debt').setDescription('借金管理')
-    .addSubcommand(s=>s.setName('borrow').setDescription('借りる')
-      .addIntegerOption(o=>o.setName('amount').setRequired(true)))
-    .addSubcommand(s=>s.setName('repay').setDescription('返す')),
-  new SlashCommandBuilder().setName('profile').setDescription('プロフィール表示'),
-];
+    .setName('unit')
+    .setDescription('ユニット操作')
+
+    /* /unit list */
+    .addSubcommand(c => c
+      .setName('list')
+      .setDescription('所持ユニット一覧を表示'))
+
+    /* /unit adventure */
+    .addSubcommand(c => c
+      .setName('adventure')
+      .setDescription('ユニットを冒険へ派遣')
+      .addStringOption(o =>
+        o.setName('unit_id')
+         .setDescription('派遣するユニットの ID')
+         .setAutocomplete(true)
+         .setRequired(true))
+      .addIntegerOption(o =>
+        o.setName('hours')
+         .setDescription('冒険時間（1〜8 時間）')
+         .setMinValue(1)
+         .setMaxValue(8)
+         .setRequired(true)))
+
+    /* /unit attack */
+    .addSubcommand(c => c
+      .setName('attack')
+      .setDescription('他プレイヤーへ攻撃')
+      .addStringOption(o =>
+        o.setName('main')
+         .setDescription('主力ユニット ID')
+         .setAutocomplete(true)
+         .setRequired(true))
+      .addStringOption(o =>
+        o.setName('ally1')
+         .setDescription('副隊ユニット ID①')
+         .setAutocomplete(true))
+      .addStringOption(o =>
+        o.setName('ally2')
+         .setDescription('副隊ユニット ID②')
+         .setAutocomplete(true))
+      .addUserOption(o =>
+        o.setName('target')
+         .setDescription('攻撃対象プレイヤー')
+         .setRequired(true))),
+
+  /* ---------- /defense ---------- */
+  new SlashCommandBuilder()
+    .setName('defense')
+    .setDescription('防御編成を管理')
+
+    /* /defense set */
+    .addSubcommand(c => c
+      .setName('set')
+      .setDescription('防御ユニットを設定')
+      .addStringOption(o =>
+        o.setName('unit1')
+         .setDescription('ユニット ID①')
+         .setAutocomplete(true)
+         .setRequired(true))
+      .addStringOption(o =>
+        o.setName('unit2')
+         .setDescription('ユニット ID②')
+         .setAutocomplete(true))
+      .addStringOption(o =>
+        o.setName('unit3')
+         .setDescription('ユニット ID③')
+         .setAutocomplete(true)))
+
+    /* /defense view */
+    .addSubcommand(c => c
+      .setName('view')
+      .setDescription('現在の防御編成を表示')),
+
+  /* ---------- /debt ---------- */
+  new SlashCommandBuilder()
+    .setName('debt')
+    .setDescription('借金を管理')
+    .addSubcommand(s => s
+      .setName('borrow')
+      .setDescription('ポイントを借りる')
+      .addIntegerOption(o =>
+        o.setName('amount')
+         .setDescription('借入額')
+         .setRequired(true)))
+    .addSubcommand(s => s
+      .setName('repay')
+      .setDescription('借金を返済')),
+
+  /* ---------- /profile ---------- */
+  new SlashCommandBuilder()
+    .setName('profile')
+    .setDescription('プロフィールを表示'),
+
+].map(c => c.toJSON());
 
 /* ========= 5. Register ========= */
 await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID,DISCORD_GUILD_ID),{ body:commands });
