@@ -178,7 +178,7 @@ const commands = [
       o.setName('unit')
        .setDescription('雇用するユニット名')
        .setRequired(true)
-       .addChoices(...CAT.map(([t]) => ({ name: t, value: t })))),
+       .addChoices(...CAT.map(([t]) => ({ name: t, value: t })) )),
 
   /* ---------- /unit ---------- */
   new SlashCommandBuilder()
@@ -196,12 +196,12 @@ const commands = [
       .setDescription('ユニットを冒険へ派遣')
       .addStringOption(o =>
         o.setName('unit_id')
-         .setDescription('派遣するユニットの ID')
+         .setDescription('派遣するユニット ID')
          .setAutocomplete(true)
          .setRequired(true))
       .addIntegerOption(o =>
         o.setName('hours')
-         .setDescription('冒険時間（1〜8 時間）')
+         .setDescription('冒険時間（1–8 h）')
          .setMinValue(1)
          .setMaxValue(8)
          .setRequired(true)))
@@ -210,11 +210,17 @@ const commands = [
     .addSubcommand(c => c
       .setName('attack')
       .setDescription('他プレイヤーへ攻撃')
+      /* ── 必須オプション ── */
       .addStringOption(o =>
         o.setName('main')
          .setDescription('主力ユニット ID')
          .setAutocomplete(true)
          .setRequired(true))
+      .addUserOption(o =>
+        o.setName('target')
+         .setDescription('攻撃対象プレイヤー')
+         .setRequired(true))
+      /* ── 任意オプション ── */
       .addStringOption(o =>
         o.setName('ally1')
          .setDescription('副隊ユニット ID①')
@@ -222,11 +228,7 @@ const commands = [
       .addStringOption(o =>
         o.setName('ally2')
          .setDescription('副隊ユニット ID②')
-         .setAutocomplete(true))
-      .addUserOption(o =>
-        o.setName('target')
-         .setDescription('攻撃対象プレイヤー')
-         .setRequired(true))),
+         .setAutocomplete(true))),
 
   /* ---------- /defense ---------- */
   new SlashCommandBuilder()
@@ -276,7 +278,7 @@ const commands = [
     .setName('profile')
     .setDescription('プロフィールを表示'),
 
-].map(c => c.toJSON());
+].map(cmd => cmd.toJSON());
 
 /* ========= 5. Register ========= */
 await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID,DISCORD_GUILD_ID),{ body:commands });
